@@ -1,0 +1,120 @@
+# templates.yaml — Metadata for each HTML template in the calibration stimulus set.
+# This file is the source of truth for filtering/grouping templates in analysis.
+# The actual HTML rendering is in src/templates/templates.py.
+
+templates:
+  - template_id: easy_single
+    difficulty: easy
+    num_elements: 1
+    background_type: solid
+    background_color: "#FFFFFF"
+    font_size_range_px: [64, 64]
+    font_family: Arial
+    elements:
+      - element_id: heading
+        role: heading
+        default_text: "Sample Heading"
+        font_size_px: 64
+        font_weight: bold
+        color: "#1A1A1A"
+    notes: "Large bold heading centered on white background. High contrast, easy tier."
+
+  - template_id: easy_card
+    difficulty: easy
+    num_elements: 2
+    background_type: solid
+    background_color: "#F0F0F0"
+    font_size_range_px: [24, 48]
+    font_family: Arial
+    elements:
+      - element_id: heading
+        role: heading
+        default_text: "Welcome Back"
+        font_size_px: 48
+        font_weight: bold
+        color: "#111111"
+      - element_id: subtext
+        role: subtext
+        default_text: "Your dashboard is ready to view"
+        font_size_px: 24
+        font_weight: normal
+        color: "#555555"
+    notes: "Card layout on light gray canvas. Two elements, high contrast."
+
+  - template_id: medium_badge
+    difficulty: medium
+    num_elements: 2
+    background_type: solid
+    background_color: "#1E3A5F"
+    font_size_range_px: [22, 56]
+    font_family: Trebuchet MS
+    elements:
+      - element_id: heading
+        role: heading
+        default_text: "Annual Report"
+        font_size_px: 56
+        font_weight: bold
+        color: "#FFFFFF"
+      - element_id: badge
+        role: badge
+        default_text: "2024"
+        font_size_px: 22
+        font_weight: bold
+        color: "#FFD700"
+    notes: "Dark blue bg, white heading centered, gold year badge top-right. Medium contrast."
+
+  - template_id: medium_two_col
+    difficulty: multi
+    num_elements: 4
+    background_type: solid
+    background_color: "#FFF8F0"
+    font_size_range_px: [20, 36]
+    font_family: Georgia
+    elements:
+      - element_id: left_heading
+        role: heading
+        default_text: "Strategy"
+        font_size_px: 36
+        font_weight: bold
+        color: "#2C1810"
+      - element_id: left_body
+        role: body
+        default_text: "Long-term growth through focused execution and customer value."
+        font_size_px: 20
+        font_weight: normal
+        color: "#5C4030"
+      - element_id: right_heading
+        role: heading
+        default_text: "Innovation"
+        font_size_px: 36
+        font_weight: bold
+        color: "#2C1810"
+      - element_id: right_body
+        role: body
+        default_text: "Investing in research to build the next generation of products."
+        font_size_px: 20
+        font_weight: normal
+        color: "#5C4030"
+    notes: "Two-column layout. 4 elements for wrong-element targeting tests."
+
+  - template_id: hard_low_contrast
+    difficulty: hard
+    num_elements: 2
+    background_type: gradient
+    background_color: "linear-gradient(145deg, #2A2A35, #1A1A22, #252530)"
+    font_size_range_px: [14, 28]
+    font_family: Palatino Linotype
+    elements:
+      - element_id: heading
+        role: heading
+        default_text: "Limited Edition"
+        font_size_px: 28
+        font_weight: normal
+        color: "#8A8098"
+      - element_id: caption
+        role: caption
+        default_text: "Exclusively crafted for discerning collectors"
+        font_size_px: 14
+        font_weight: normal
+        color: "#6A6075"
+    notes: "Dark gradient bg, muted purple serif text. Low contrast, hard tier."

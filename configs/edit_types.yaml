@@ -1,0 +1,82 @@
+# Edit configurations for the pilot stimulus set
+# Format: list of edit configs, each specifying which template + edit type + params
+
+edit_configs:
+
+  # --- Color change ---
+  - edit_id: color_change_easy_single_blue
+    edit_type: color_change
+    template_id: easy_single
+    element_id: heading
+    edit_params:
+      element_id: heading
+      new_color: "#3B82F6"
+    edit_instruction: "Change the heading color to blue (#3B82F6)"
+
+  - edit_id: color_change_medium_badge_red
+    edit_type: color_change
+    template_id: medium_badge
+    element_id: heading
+    edit_params:
+      element_id: heading
+      new_color: "#EF4444"
+    edit_instruction: "Change the heading color to red (#EF4444)"
+
+  # --- Scale change ---
+  - edit_id: scale_change_easy_single_larger
+    edit_type: scale_change
+    template_id: easy_single
+    element_id: heading
+    edit_params:
+      element_id: heading
+      new_font_size_px: 80
+    edit_instruction: "Increase the heading font size to 80px"
+
+  - edit_id: scale_change_medium_badge_smaller
+    edit_type: scale_change
+    template_id: medium_badge
+    element_id: heading
+    edit_params:
+      element_id: heading
+      new_font_size_px: 40
+    edit_instruction: "Decrease the heading font size to 40px"
+
+  # --- Content change ---
+  - edit_id: content_change_easy_single_text
+    edit_type: content_change
+    template_id: easy_single
+    element_id: heading
+    edit_params:
+      element_id: heading
+      new_text: "Updated Heading"
+    edit_instruction: "Change the heading text to 'Updated Heading'"
+
+  - edit_id: content_change_medium_badge_year
+    edit_type: content_change
+    template_id: medium_badge
+    element_id: badge
+    edit_params:
+      element_id: badge
+      new_text: "2025"
+    edit_instruction: "Change the badge year to 2025"
+
+  # --- Position change ---
+  - edit_id: position_change_easy_single_down
+    edit_type: position_change
+    template_id: easy_single
+    element_id: heading
+    edit_params:
+      element_id: heading
+      new_left_px: 256
+      new_top_px: 350
+    edit_instruction: "Move the heading down to position (256, 350)"
+
+  - edit_id: position_change_medium_badge_badge
+    edit_type: position_change
+    template_id: medium_badge
+    element_id: badge
+    edit_params:
+      element_id: badge
+      new_left_px: 56
+      new_top_px: 48
+    edit_instruction: "Move the badge to the top-left at position (56, 48)"

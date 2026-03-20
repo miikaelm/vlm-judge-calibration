@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vlm-judge-calibration"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright",
+    "Pillow",
+    "openai",
+    "scikit-image",
+    "opencv-python",
+    "numpy",
+    "pyyaml",
+    "pandas",
+    "matplotlib",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

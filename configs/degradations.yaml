@@ -1,0 +1,706 @@
+# Degradation configurations — full sweep
+# HTML-layer: ~69 configs | Image-layer: 9 configs | Total: 78 configs
+# Each config combines with edit_types × templates to form the stimulus table.
+
+degradations:
+
+  # ---------------------------------------------------------------------------
+  # COLOR OFFSET — ΔE in CIEDE2000 (5 magnitudes)
+  # ---------------------------------------------------------------------------
+  - id: color_offset_tiny
+    dimension: color_offset
+    magnitude: delta_e_2
+    layer: html
+    params:
+      delta_e: 2.0
+    notes: "Near-threshold color shift (ΔE~2)"
+
+  - id: color_offset_small
+    dimension: color_offset
+    magnitude: delta_e_5
+    layer: html
+    params:
+      delta_e: 5.0
+    notes: "Just-noticeable color shift (ΔE~5)"
+
+  - id: color_offset_medium
+    dimension: color_offset
+    magnitude: delta_e_10
+    layer: html
+    params:
+      delta_e: 10.0
+    notes: "Clearly visible color shift (ΔE~10)"
+
+  - id: color_offset_large
+    dimension: color_offset
+    magnitude: delta_e_20
+    layer: html
+    params:
+      delta_e: 20.0
+    notes: "Large color shift (ΔE~20)"
+
+  - id: color_offset_xlarge
+    dimension: color_offset
+    magnitude: delta_e_40
+    layer: html
+    params:
+      delta_e: 40.0
+    notes: "Very large, obviously wrong color (ΔE~40)"
+
+  # ---------------------------------------------------------------------------
+  # POSITION OFFSET — 4 directions × 3 magnitudes = 12 configs
+  # ---------------------------------------------------------------------------
+  - id: position_offset_right_small
+    dimension: position_offset
+    magnitude: right_5px
+    layer: html
+    params:
+      offset_x_px: 5
+      offset_y_px: 0
+    notes: "Shift 5px right"
+
+  - id: position_offset_right_medium
+    dimension: position_offset
+    magnitude: right_25px
+    layer: html
+    params:
+      offset_x_px: 25
+      offset_y_px: 0
+    notes: "Shift 25px right"
+
+  - id: position_offset_right_large
+    dimension: position_offset
+    magnitude: right_100px
+    layer: html
+    params:
+      offset_x_px: 100
+      offset_y_px: 0
+    notes: "Shift 100px right"
+
+  - id: position_offset_left_small
+    dimension: position_offset
+    magnitude: left_5px
+    layer: html
+    params:
+      offset_x_px: -5
+      offset_y_px: 0
+    notes: "Shift 5px left"
+
+  - id: position_offset_left_medium
+    dimension: position_offset
+    magnitude: left_25px
+    layer: html
+    params:
+      offset_x_px: -25
+      offset_y_px: 0
+    notes: "Shift 25px left"
+
+  - id: position_offset_left_large
+    dimension: position_offset
+    magnitude: left_100px
+    layer: html
+    params:
+      offset_x_px: -100
+      offset_y_px: 0
+    notes: "Shift 100px left"
+
+  - id: position_offset_down_small
+    dimension: position_offset
+    magnitude: down_5px
+    layer: html
+    params:
+      offset_x_px: 0
+      offset_y_px: 5
+    notes: "Shift 5px down"
+
+  - id: position_offset_down_medium
+    dimension: position_offset
+    magnitude: down_25px
+    layer: html
+    params:
+      offset_x_px: 0
+      offset_y_px: 25
+    notes: "Shift 25px down"
+
+  - id: position_offset_down_large
+    dimension: position_offset
+    magnitude: down_100px
+    layer: html
+    params:
+      offset_x_px: 0
+      offset_y_px: 100
+    notes: "Shift 100px down"
+
+  - id: position_offset_up_small
+    dimension: position_offset
+    magnitude: up_5px
+    layer: html
+    params:
+      offset_x_px: 0
+      offset_y_px: -5
+    notes: "Shift 5px up"
+
+  - id: position_offset_up_medium
+    dimension: position_offset
+    magnitude: up_25px
+    layer: html
+    params:
+      offset_x_px: 0
+      offset_y_px: -25
+    notes: "Shift 25px up"
+
+  - id: position_offset_up_large
+    dimension: position_offset
+    magnitude: up_100px
+    layer: html
+    params:
+      offset_x_px: 0
+      offset_y_px: -100
+    notes: "Shift 100px up"
+
+  # ---------------------------------------------------------------------------
+  # SCALE ERROR — signed % deviation from correct font size (10 configs)
+  # ---------------------------------------------------------------------------
+  - id: scale_error_up_small
+    dimension: scale_error
+    magnitude: scale_up_3pct
+    layer: html
+    params:
+      scale_error_pct: 3.0
+    notes: "Font 3% too large"
+
+  - id: scale_error_up_medium
+    dimension: scale_error
+    magnitude: scale_up_10pct
+    layer: html
+    params:
+      scale_error_pct: 10.0
+    notes: "Font 10% too large"
+
+  - id: scale_error_up_large
+    dimension: scale_error
+    magnitude: scale_up_25pct
+    layer: html
+    params:
+      scale_error_pct: 25.0
+    notes: "Font 25% too large"
+
+  - id: scale_error_up_xlarge
+    dimension: scale_error
+    magnitude: scale_up_50pct
+    layer: html
+    params:
+      scale_error_pct: 50.0
+    notes: "Font 50% too large"
+
+  - id: scale_error_up_xxlarge
+    dimension: scale_error
+    magnitude: scale_up_100pct
+    layer: html
+    params:
+      scale_error_pct: 100.0
+    notes: "Font double the correct size"
+
+  - id: scale_error_down_small
+    dimension: scale_error
+    magnitude: scale_down_3pct
+    layer: html
+    params:
+      scale_error_pct: -3.0
+    notes: "Font 3% too small"
+
+  - id: scale_error_down_medium
+    dimension: scale_error
+    magnitude: scale_down_10pct
+    layer: html
+    params:
+      scale_error_pct: -10.0
+    notes: "Font 10% too small"
+
+  - id: scale_error_down_large
+    dimension: scale_error
+    magnitude: scale_down_25pct
+    layer: html
+    params:
+      scale_error_pct: -25.0
+    notes: "Font 25% too small"
+
+  - id: scale_error_down_xlarge
+    dimension: scale_error
+    magnitude: scale_down_50pct
+    layer: html
+    params:
+      scale_error_pct: -50.0
+    notes: "Font 50% too small"
+
+  - id: scale_error_down_xxlarge
+    dimension: scale_error
+    magnitude: scale_down_75pct
+    layer: html
+    params:
+      scale_error_pct: -75.0
+    notes: "Font 75% too small (quarter size)"
+
+  # ---------------------------------------------------------------------------
+  # ROTATION — signed degrees (10 configs)
+  # ---------------------------------------------------------------------------
+  - id: rotation_cw_tiny
+    dimension: rotation
+    magnitude: cw_1deg
+    layer: html
+    params:
+      angle_deg: 1
+    notes: "1° clockwise rotation"
+
+  - id: rotation_cw_small
+    dimension: rotation
+    magnitude: cw_3deg
+    layer: html
+    params:
+      angle_deg: 3
+    notes: "3° clockwise rotation"
+
+  - id: rotation_cw_medium
+    dimension: rotation
+    magnitude: cw_5deg
+    layer: html
+    params:
+      angle_deg: 5
+    notes: "5° clockwise rotation"
+
+  - id: rotation_cw_large
+    dimension: rotation
+    magnitude: cw_15deg
+    layer: html
+    params:
+      angle_deg: 15
+    notes: "15° clockwise rotation"
+
+  - id: rotation_cw_xlarge
+    dimension: rotation
+    magnitude: cw_45deg
+    layer: html
+    params:
+      angle_deg: 45
+    notes: "45° clockwise rotation"
+
+  - id: rotation_ccw_tiny
+    dimension: rotation
+    magnitude: ccw_1deg
+    layer: html
+    params:
+      angle_deg: -1
+    notes: "1° counter-clockwise rotation"
+
+  - id: rotation_ccw_small
+    dimension: rotation
+    magnitude: ccw_3deg
+    layer: html
+    params:
+      angle_deg: -3
+    notes: "3° counter-clockwise rotation"
+
+  - id: rotation_ccw_medium
+    dimension: rotation
+    magnitude: ccw_5deg
+    layer: html
+    params:
+      angle_deg: -5
+    notes: "5° counter-clockwise rotation"
+
+  - id: rotation_ccw_large
+    dimension: rotation
+    magnitude: ccw_15deg
+    layer: html
+    params:
+      angle_deg: -15
+    notes: "15° counter-clockwise rotation"
+
+  - id: rotation_ccw_xlarge
+    dimension: rotation
+    magnitude: ccw_45deg
+    layer: html
+    params:
+      angle_deg: -45
+    notes: "45° counter-clockwise rotation"
+
+  # ---------------------------------------------------------------------------
+  # FONT WEIGHT — 3 configs
+  # ---------------------------------------------------------------------------
+  - id: font_weight_bold
+    dimension: font_weight
+    magnitude: bold
+    layer: html
+    params:
+      font_weight: "bold"
+    notes: "Switch to bold (700)"
+
+  - id: font_weight_light
+    dimension: font_weight
+    magnitude: light_300
+    layer: html
+    params:
+      font_weight: 300
+    notes: "Switch to light (300)"
+
+  - id: font_weight_medium
+    dimension: font_weight
+    magnitude: medium_500
+    layer: html
+    params:
+      font_weight: 500
+    notes: "Switch to medium (500)"
+
+  # ---------------------------------------------------------------------------
+  # FONT STYLE — 2 configs
+  # ---------------------------------------------------------------------------
+  - id: font_style_italic
+    dimension: font_style
+    magnitude: italic
+    layer: html
+    params:
+      font_style: "italic"
+    notes: "Switch to italic"
+
+  - id: font_style_oblique
+    dimension: font_style
+    magnitude: oblique
+    layer: html
+    params:
+      font_style: "oblique"
+    notes: "Switch to oblique"
+
+  # ---------------------------------------------------------------------------
+  # LETTER SPACING — 4 positive + 4 negative = 8 configs
+  # ---------------------------------------------------------------------------
+  - id: letter_spacing_pos_tiny
+    dimension: letter_spacing
+    magnitude: pos_0_5px
+    layer: html
+    params:
+      letter_spacing_px: 0.5
+    notes: "+0.5px letter spacing"
+
+  - id: letter_spacing_pos_small
+    dimension: letter_spacing
+    magnitude: pos_1px
+    layer: html
+    params:
+      letter_spacing_px: 1
+    notes: "+1px letter spacing"
+
+  - id: letter_spacing_pos_medium
+    dimension: letter_spacing
+    magnitude: pos_2px
+    layer: html
+    params:
+      letter_spacing_px: 2
+    notes: "+2px letter spacing"
+
+  - id: letter_spacing_pos_large
+    dimension: letter_spacing
+    magnitude: pos_5px
+    layer: html
+    params:
+      letter_spacing_px: 5
+    notes: "+5px letter spacing"
+
+  - id: letter_spacing_neg_tiny
+    dimension: letter_spacing
+    magnitude: neg_0_5px
+    layer: html
+    params:
+      letter_spacing_px: -0.5
+    notes: "-0.5px letter spacing"
+
+  - id: letter_spacing_neg_small
+    dimension: letter_spacing
+    magnitude: neg_1px
+    layer: html
+    params:
+      letter_spacing_px: -1
+    notes: "-1px letter spacing"
+
+  - id: letter_spacing_neg_medium
+    dimension: letter_spacing
+    magnitude: neg_2px
+    layer: html
+    params:
+      letter_spacing_px: -2
+    notes: "-2px letter spacing"
+
+  - id: letter_spacing_neg_large
+    dimension: letter_spacing
+    magnitude: neg_5px
+    layer: html
+    params:
+      letter_spacing_px: -5
+    notes: "-5px letter spacing"
+
+  # ---------------------------------------------------------------------------
+  # OPACITY — 4 configs
+  # ---------------------------------------------------------------------------
+  - id: opacity_90
+    dimension: opacity
+    magnitude: opacity_0_9
+    layer: html
+    params:
+      opacity: 0.9
+    notes: "10% transparent"
+
+  - id: opacity_70
+    dimension: opacity
+    magnitude: opacity_0_7
+    layer: html
+    params:
+      opacity: 0.7
+    notes: "30% transparent"
+
+  - id: opacity_50
+    dimension: opacity
+    magnitude: opacity_0_5
+    layer: html
+    params:
+      opacity: 0.5
+    notes: "50% transparent"
+
+  - id: opacity_30
+    dimension: opacity
+    magnitude: opacity_0_3
+    layer: html
+    params:
+      opacity: 0.3
+    notes: "70% transparent"
+
+  # ---------------------------------------------------------------------------
+  # CHARACTER SUBSTITUTION — 3 tiers (similar) + 3 tiers (random) = 6 configs
+  # ---------------------------------------------------------------------------
+  - id: char_sub_1_similar
+    dimension: char_substitution
+    magnitude: 1_similar
+    layer: html
+    params:
+      num_substitutions: 1
+      tier: 1_similar
+    notes: "1 char replaced with visually similar confusable"
+
+  - id: char_sub_2_similar
+    dimension: char_substitution
+    magnitude: 2_similar
+    layer: html
+    params:
+      num_substitutions: 2
+      tier: 1_similar
+    notes: "2 chars replaced with visually similar confusables"
+
+  - id: char_sub_3_similar
+    dimension: char_substitution
+    magnitude: 3_similar
+    layer: html
+    params:
+      num_substitutions: 3
+      tier: 1_similar
+    notes: "3 chars replaced with visually similar confusables"
+
+  - id: char_sub_1_random
+    dimension: char_substitution
+    magnitude: 1_random
+    layer: html
+    params:
+      substitutions:
+        - {position: 0, original: "H", replacement: "X"}
+      num_substitutions: 1
+      tier: random
+    notes: "1 char replaced with unrelated character"
+
+  - id: char_sub_2_random
+    dimension: char_substitution
+    magnitude: 2_random
+    layer: html
+    params:
+      substitutions:
+        - {position: 0, original: "H", replacement: "X"}
+        - {position: 2, original: "a", replacement: "z"}
+      num_substitutions: 2
+      tier: random
+    notes: "2 chars replaced with unrelated characters"
+
+  - id: char_sub_3_random
+    dimension: char_substitution
+    magnitude: 3_random
+    layer: html
+    params:
+      substitutions:
+        - {position: 0, original: "H", replacement: "X"}
+        - {position: 2, original: "a", replacement: "z"}
+        - {position: 4, original: "i", replacement: "q"}
+      num_substitutions: 3
+      tier: random
+    notes: "3 chars replaced with unrelated characters"
+
+  # ---------------------------------------------------------------------------
+  # WORD-LEVEL ERRORS — 3 configs
+  # ---------------------------------------------------------------------------
+  - id: word_error_wrong
+    dimension: word_error
+    magnitude: wrong_word
+    layer: html
+    params:
+      error_type: wrong_word
+      word_index: 0
+      replacement: "Wrong"
+    notes: "First word replaced with 'Wrong'"
+
+  - id: word_error_missing
+    dimension: word_error
+    magnitude: missing_word
+    layer: html
+    params:
+      error_type: missing_word
+      word_index: 0
+    notes: "First word removed"
+
+  - id: word_error_extra
+    dimension: word_error
+    magnitude: extra_word
+    layer: html
+    params:
+      error_type: extra_word
+      word_index: 0
+      extra_word: "Extra"
+    notes: "Extra word inserted after first word"
+
+  # ---------------------------------------------------------------------------
+  # CASE ERRORS — 3 configs
+  # ---------------------------------------------------------------------------
+  - id: case_error_first_flip
+    dimension: case_error
+    magnitude: first_char_flip
+    layer: html
+    params:
+      case_type: first_char_flip
+    notes: "First character case flipped"
+
+  - id: case_error_all_caps
+    dimension: case_error
+    magnitude: all_caps
+    layer: html
+    params:
+      case_type: all_caps
+    notes: "All text uppercased"
+
+  - id: case_error_all_lower
+    dimension: case_error
+    magnitude: all_lower
+    layer: html
+    params:
+      case_type: all_lower
+    notes: "All text lowercased"
+
+  # ---------------------------------------------------------------------------
+  # CONTENT SWAP — 3 configs (generic replacements, always wrong regardless of edit)
+  # ---------------------------------------------------------------------------
+  - id: content_swap_partial
+    dimension: content_swap
+    magnitude: partial
+    layer: html
+    params:
+      new_text: "Text"
+    notes: "Replaced with very short generic text"
+
+  - id: content_swap_similar
+    dimension: content_swap
+    magnitude: similar
+    layer: html
+    params:
+      new_text: "Sample Heading"
+    notes: "Replaced with plausible but wrong text"
+
+  - id: content_swap_wrong
+    dimension: content_swap
+    magnitude: completely_wrong
+    layer: html
+    params:
+      new_text: "XXXXXXXXXXX"
+    notes: "Replaced with obviously wrong placeholder"
+
+  # ---------------------------------------------------------------------------
+  # IMAGE-LAYER: GAUSSIAN NOISE — 3 configs
+  # ---------------------------------------------------------------------------
+  - id: gaussian_noise_small
+    dimension: gaussian_noise
+    magnitude: sigma_5
+    layer: image
+    params:
+      sigma: 5
+    notes: "Light Gaussian noise (σ=5)"
+
+  - id: gaussian_noise_medium
+    dimension: gaussian_noise
+    magnitude: sigma_15
+    layer: image
+    params:
+      sigma: 15
+    notes: "Moderate Gaussian noise (σ=15)"
+
+  - id: gaussian_noise_large
+    dimension: gaussian_noise
+    magnitude: sigma_30
+    layer: image
+    params:
+      sigma: 30
+    notes: "Heavy Gaussian noise (σ=30)"
+
+  # ---------------------------------------------------------------------------
+  # IMAGE-LAYER: JPEG COMPRESSION — 3 configs
+  # ---------------------------------------------------------------------------
+  - id: jpeg_compression_light
+    dimension: jpeg_compression
+    magnitude: quality_80
+    layer: image
+    params:
+      quality: 80
+    notes: "Mild JPEG compression (quality=80)"
+
+  - id: jpeg_compression_medium
+    dimension: jpeg_compression
+    magnitude: quality_50
+    layer: image
+    params:
+      quality: 50
+    notes: "Moderate JPEG compression (quality=50)"
+
+  - id: jpeg_compression_heavy
+    dimension: jpeg_compression
+    magnitude: quality_20
+    layer: image
+    params:
+      quality: 20
+    notes: "Heavy JPEG compression (quality=20)"
+
+  # ---------------------------------------------------------------------------
+  # IMAGE-LAYER: BLUR — 3 configs
+  # ---------------------------------------------------------------------------
+  - id: blur_small
+    dimension: blur
+    magnitude: radius_1
+    layer: image
+    params:
+      radius: 1
+    notes: "Slight Gaussian blur (r=1)"
+
+  - id: blur_medium
+    dimension: blur
+    magnitude: radius_3
+    layer: image
+    params:
+      radius: 3
+    notes: "Noticeable Gaussian blur (r=3)"
+
+  - id: blur_large
+    dimension: blur
+    magnitude: radius_5
+    layer: image
+    params:
+      radius: 5
+    notes: "Heavy Gaussian blur (r=5)"

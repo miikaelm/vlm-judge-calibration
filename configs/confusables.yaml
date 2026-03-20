@@ -1,0 +1,25 @@
+# Character confusables — visually similar substitutions
+# Format: original: [list of replacements]
+confusables:
+  "i": ["l", "1"]
+  "l": ["I", "1"]
+  "o": ["0", "O"]
+  "O": ["0", "o"]
+  "1": ["l", "I"]
+  "0": ["O", "o"]
+  "a": ["à", "á"]
+  "e": ["è", "é"]
+  "n": ["m", "ñ"]
+  "u": ["ü", "û"]
+  "s": ["5", "§"]
+  "S": ["5", "$"]
+  "g": ["q", "9"]
+  "b": ["d", "6"]
+  "p": ["q", "ρ"]
+  "c": ["ç", "¢"]
+
+# Tier labels for magnitude levels
+tiers:
+  1_similar: 1    # 1 character substituted, visually similar
+  2_similar: 2    # 2 characters substituted, visually similar
+  3_similar: 3    # 3 characters substituted, visually similar
