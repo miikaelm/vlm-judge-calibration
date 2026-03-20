@@ -73,7 +73,7 @@ def run_analysis(
     results_jsonl: Path,
     manifest_dir: Path,
     output_dir: Path,
-    vlms: list[str],
+    model_name: str | None,
 ) -> None:
     print(f"Loading results from {results_jsonl} ...")
     df = load_results(results_jsonl, manifest_dir)
@@ -85,26 +85,27 @@ def run_analysis(
         sys.exit(1)
 
     available_dims = set(df["degradation_dimension"].unique())
-    available_models = set(df["model"].unique())
 
-    if not vlms:
-        vlms = sorted(available_models)
+    # If a display name is given, relabel the model column so all plot
+    # functions see the name the user provided — no path inference.
+    if model_name:
+        df["model"] = model_name
+        vlms = [model_name]
     else:
-        missing = set(vlms) - available_models
-        if missing:
-            print(f"WARNING: model(s) not in results: {missing}")
-        vlms = [v for v in vlms if v in available_models]
-
-    if not vlms:
-        print("ERROR: no matching models in results.")
-        sys.exit(1)
+        vlms = sorted(df["model"].unique())
 
     print(f"\nGenerating figures for model(s): {vlms}")
     print(f"Output directory: {output_dir}\n")
 
+    # One model → figures go directly into output_dir.
+    # Multiple models → one subdir per model name inside output_dir.
+    def vlm_dir(name: str) -> Path:
+        if len(vlms) == 1:
+            return output_dir
+        return output_dir / name.replace("-", "_").replace(".", "_")
+
     for vlm in vlms:
-        vlm_slug = vlm.replace("-", "_").replace(".", "_")
-        vlm_dir = output_dir / vlm_slug
+        vdir = vlm_dir(vlm)
 
         # ------------------------------------------------------------------
         # 1. Sensitivity curves (Exp2 overall_quality, one per dimension)
@@ -114,7 +115,7 @@ def run_analysis(
             if dim not in available_dims:
                 continue
             fig = plot_sensitivity_curve(df, dim, vlm)
-            save_fig(fig, vlm_dir / "sensitivity" / f"{dim}.png")
+            save_fig(fig, vdir / "sensitivity" / f"{dim}.png")
 
         # ------------------------------------------------------------------
         # 2. Sensitivity curves for additional Exp2 score columns
@@ -124,7 +125,7 @@ def run_analysis(
                 if dim not in available_dims:
                     continue
                 fig = plot_sensitivity_curve(df, dim, vlm, exp2_score=score_col)
-                save_fig(fig, vlm_dir / "sensitivity" / score_col / f"{dim}.png")
+                save_fig(fig, vdir / "sensitivity" / score_col / f"{dim}.png")
 
         # ------------------------------------------------------------------
         # 3. Exp1 vs Exp2 gap curves (one per dimension)
@@ -134,18 +135,18 @@ def run_analysis(
             if dim not in available_dims:
                 continue
             fig = plot_exp_gap(df, dim, vlm=vlm)
-            save_fig(fig, vlm_dir / "exp_gap" / f"{dim}.png")
+            save_fig(fig, vdir / "exp_gap" / f"{dim}.png")
 
         # ------------------------------------------------------------------
         # 4. Heatmaps
         # ------------------------------------------------------------------
         print(f"[{vlm}] Heatmaps ...")
         fig = plot_detection_heatmap(df, vlm)
-        save_fig(fig, vlm_dir / "heatmaps" / "detection_rate.png")
+        save_fig(fig, vdir / "heatmaps" / "detection_rate.png")
 
         for score_col in _EXP2_SCORE_COLS:
             fig = plot_score_heatmap(df, vlm, score_col=score_col)
-            save_fig(fig, vlm_dir / "heatmaps" / f"score_{score_col}.png")
+            save_fig(fig, vdir / "heatmaps" / f"score_{score_col}.png")
 
     # ------------------------------------------------------------------
     # 5. Cross-model comparison heatmaps (if multiple models)
@@ -233,20 +234,19 @@ def main() -> None:
         help="Output directory for figures (default: outputs/figures/)",
     )
     parser.add_argument(
-        "--vlm",
-        action="append",
-        dest="vlms",
+        "--model-name",
         default=None,
-        metavar="MODEL",
-        help="Model name(s) to plot. Can be repeated. Default: all in results.",
+        metavar="NAME",
+        help="Display name for the model (used in graph titles and output dirs). "
+             "If omitted, the raw value from the results 'model' column is used.",
     )
     args = parser.parse_args()
 
     run_analysis(
-        results_jsonl=args.results,
-        manifest_dir=args.manifest,
-        output_dir=args.output,
-        vlms=args.vlms or [],
+        results_jsonl=args.results.resolve(),
+        manifest_dir=args.manifest.resolve(),
+        output_dir=args.output.resolve(),
+        model_name=args.model_name,
     )
 
 
