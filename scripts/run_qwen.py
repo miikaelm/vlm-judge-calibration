@@ -7,11 +7,12 @@ same format produced by src/evaluation/runner.py (compatible with validate_resul
 and run_analysis.py).
 
 Usage:
+    # Single experiment
     python scripts/run_qwen.py \\
         --manifest data/pilot/ \\
         --model /scratch/project_xxx/models/Qwen2.5-VL-7B-Instruct \\
         --experiment 2 \\
-        --output data/results_qwen.jsonl
+        --output data/results_qwen_exp2.jsonl
 
     python scripts/run_qwen.py \\
         --manifest data/full/ \\
@@ -19,6 +20,14 @@ Usage:
         --experiment 1 \\
         --output data/results_qwen_exp1.jsonl \\
         --limit 10
+
+    # Both experiments in one run (model loaded once):
+    python scripts/run_qwen.py \\
+        --manifest data/full/ \\
+        --model Qwen/Qwen2.5-VL-7B-Instruct \\
+        --experiment both \\
+        --output data/results/
+    # → writes data/results/exp1.jsonl and data/results/exp2.jsonl
 """
 
 from __future__ import annotations
@@ -193,28 +202,22 @@ def _build_result_record(
 # Main
 # ---------------------------------------------------------------------------
 
-def run(
+def _process_stimuli(
+    model,
+    processor,
     manifest_dir: Path,
-    model_name_or_path: str,
     variant: str,
     output_path: Path,
     parse_failures_path: Path,
-    limit: int | None,
-    device: str,
-    torch_dtype: str,
+    stimulus_dirs: list[Path],
+    model_name_or_path: str,
     max_new_tokens: int,
 ) -> None:
+    """Run inference for all stimuli under one variant and append to output_path."""
     prompts_path = Path(__file__).parent.parent / "configs" / "vlm_prompts.yaml"
     prompt = _load_prompt(prompts_path, variant)
 
-    stimulus_dirs = _find_stimulus_dirs(manifest_dir)
-    if limit is not None:
-        stimulus_dirs = stimulus_dirs[:limit]
     n = len(stimulus_dirs)
-    print(f"[run_qwen] {n} stimuli | variant={variant} | model={model_name_or_path}")
-
-    model, processor = _load_model(model_name_or_path, device, torch_dtype)
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     n_ok = n_fail = 0
 
@@ -224,7 +227,7 @@ def run(
         files = meta["files"]
         instruction = meta.get("edit_instruction", "")
 
-        print(f"[run_qwen] [{i}/{n}] {stimulus_id} ...", end=" ", flush=True)
+        print(f"[run_qwen] [{i}/{n}] {stimulus_id} ({variant}) ...", end=" ", flush=True)
 
         if variant == "experiment_2":
             img1 = Image.open(stimulus_dir / files["source"]).convert("RGB")
@@ -261,8 +264,37 @@ def run(
         with open(output_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-    print(f"\n[run_qwen] Done. {n_ok} succeeded, {n_fail} failed.")
+    print(f"\n[run_qwen] {variant}: {n_ok} succeeded, {n_fail} failed.")
     print(f"[run_qwen] Results -> {output_path}")
+
+
+
+def run(
+    manifest_dir: Path,
+    model_name_or_path: str,
+    variants: list[str],
+    output_paths: list[Path],
+    parse_failures_paths: list[Path],
+    limit: int | None,
+    device: str,
+    torch_dtype: str,
+    max_new_tokens: int,
+) -> None:
+    stimulus_dirs = _find_stimulus_dirs(manifest_dir)
+    if limit is not None:
+        stimulus_dirs = stimulus_dirs[:limit]
+    n = len(stimulus_dirs)
+    print(f"[run_qwen] {n} stimuli | variants={variants} | model={model_name_or_path}")
+
+    model, processor = _load_model(model_name_or_path, device, torch_dtype)
+
+    for variant, output_path, parse_failures_path in zip(variants, output_paths, parse_failures_paths):
+        print(f"\n[run_qwen] === Running {variant} ===")
+        _process_stimuli(
+            model, processor, manifest_dir, variant,
+            output_path, parse_failures_path, stimulus_dirs,
+            model_name_or_path, max_new_tokens,
+        )
 
 
 def main() -> None:
@@ -271,9 +303,12 @@ def main() -> None:
                         help="Directory with stimulus subdirs (each containing metadata.json)")
     parser.add_argument("--model", required=True,
                         help="HuggingFace model ID or local path, e.g. Qwen/Qwen2.5-VL-7B-Instruct")
-    parser.add_argument("--experiment", type=int, choices=[1, 2], default=2,
-                        help="1=perceptual sensitivity, 2=instruction-following")
-    parser.add_argument("--output", type=Path, default=Path("data/results.jsonl"))
+    parser.add_argument(
+        "--experiment", choices=["1", "2", "both"], default="2",
+        help="1=perceptual sensitivity, 2=instruction-following, both=run sequentially (model loaded once)",
+    )
+    parser.add_argument("--output", type=Path, default=Path("data/results.jsonl"),
+                        help="Output file path (single experiment) or directory (--experiment both, writes exp1.jsonl + exp2.jsonl inside).")
     parser.add_argument("--parse-failures", type=Path, default=Path("data/parse_failures.jsonl"))
     parser.add_argument("--limit", type=int, default=None, help="Process only the first N stimuli")
     parser.add_argument("--device", default="auto",
@@ -284,12 +319,23 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=512)
     args = parser.parse_args()
 
+    if args.experiment == "both":
+        variants = ["experiment_1", "experiment_2"]
+        out_dir = args.output
+        output_paths = [out_dir / "exp1.jsonl", out_dir / "exp2.jsonl"]
+        pf_dir = args.parse_failures.parent / args.parse_failures.stem
+        parse_failures_paths = [pf_dir / "exp1.jsonl", pf_dir / "exp2.jsonl"]
+    else:
+        variants = [f"experiment_{args.experiment}"]
+        output_paths = [args.output]
+        parse_failures_paths = [args.parse_failures]
+
     run(
         manifest_dir=args.manifest,
         model_name_or_path=args.model,
-        variant=f"experiment_{args.experiment}",
-        output_path=args.output,
-        parse_failures_path=args.parse_failures,
+        variants=variants,
+        output_paths=output_paths,
+        parse_failures_paths=parse_failures_paths,
         limit=args.limit,
         device=args.device,
         torch_dtype=args.dtype,

@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """
-run_analysis.py — Produce all analysis figures to outputs/figures/.
+run_analysis.py — Produce analysis figures to outputs/figures/.
+
+Pass whichever result files you have; only the relevant artifacts are generated.
 
 Usage:
-    python scripts/run_analysis.py
-    python scripts/run_analysis.py --results data/results.jsonl --manifest data/full/
-    python scripts/run_analysis.py --vlm gpt-4o --output outputs/figures/
+    # Only perceptual sensitivity (Exp1) — detection heatmaps
+    python scripts/run_analysis.py --results-exp1 data/results_exp1.jsonl --manifest data/full/
+
+    # Only instruction-following (Exp2) — sensitivity curves + score heatmaps
+    python scripts/run_analysis.py --results-exp2 data/results_exp2.jsonl --manifest data/full/
+
+    # Both — all of the above plus Exp1-vs-Exp2 gap curves
+    python scripts/run_analysis.py \\
+        --results-exp1 data/results_exp1.jsonl \\
+        --results-exp2 data/results_exp2.jsonl \\
+        --manifest data/full/
 """
 
 from __future__ import annotations
@@ -69,20 +79,43 @@ def save_fig(fig: plt.Figure, path: Path) -> None:
     print(f"  saved: {path.relative_to(path.parent.parent.parent)}")
 
 
+def _load_combined(
+    results_exp1: Path | None,
+    results_exp2: Path | None,
+    manifest_dir: Path,
+):
+    import pandas as pd
+    frames = []
+    if results_exp1 is not None:
+        frames.append(load_results(results_exp1, manifest_dir))
+    if results_exp2 is not None:
+        frames.append(load_results(results_exp2, manifest_dir))
+    return pd.concat(frames, ignore_index=True)
+
+
 def run_analysis(
-    results_jsonl: Path,
+    results_exp1: Path | None,
+    results_exp2: Path | None,
     manifest_dir: Path,
     output_dir: Path,
     model_name: str | None,
 ) -> None:
-    print(f"Loading results from {results_jsonl} ...")
-    df = load_results(results_jsonl, manifest_dir)
+    if results_exp1 is None and results_exp2 is None:
+        print("ERROR: supply at least one of --results-exp1 / --results-exp2.")
+        sys.exit(1)
+
+    sources = [p for p in (results_exp1, results_exp2) if p is not None]
+    print(f"Loading results from: {', '.join(str(p) for p in sources)} ...")
+    df = _load_combined(results_exp1, results_exp2, manifest_dir)
     print(f"  {len(df)} records loaded ({df['stimulus_id'].nunique()} stimuli, "
           f"{df['model'].nunique()} model(s))")
 
     if df.empty:
         print("ERROR: no data — nothing to plot.")
         sys.exit(1)
+
+    has_exp1 = "experiment_1" in df["experiment"].values
+    has_exp2 = "experiment_2" in df["experiment"].values
 
     available_dims = set(df["degradation_dimension"].unique())
 
@@ -95,6 +128,7 @@ def run_analysis(
         vlms = sorted(df["model"].unique())
 
     print(f"\nGenerating figures for model(s): {vlms}")
+    print(f"Experiments present: {'exp1 ' if has_exp1 else ''}{'exp2' if has_exp2 else ''}")
     print(f"Output directory: {output_dir}\n")
 
     # One model → figures go directly into output_dir.
@@ -110,48 +144,53 @@ def run_analysis(
         # ------------------------------------------------------------------
         # 1. Sensitivity curves (Exp2 overall_quality, one per dimension)
         # ------------------------------------------------------------------
-        print(f"[{vlm}] Sensitivity curves ...")
-        for dim in _ALL_DIMENSIONS:
-            if dim not in available_dims:
-                continue
-            fig = plot_sensitivity_curve(df, dim, vlm)
-            save_fig(fig, vdir / "sensitivity" / f"{dim}.png")
-
-        # ------------------------------------------------------------------
-        # 2. Sensitivity curves for additional Exp2 score columns
-        # ------------------------------------------------------------------
-        for score_col in _EXP2_SCORE_COLS[1:]:  # skip overall_quality (done above)
+        if has_exp2:
+            print(f"[{vlm}] Sensitivity curves ...")
             for dim in _ALL_DIMENSIONS:
                 if dim not in available_dims:
                     continue
-                fig = plot_sensitivity_curve(df, dim, vlm, exp2_score=score_col)
-                save_fig(fig, vdir / "sensitivity" / score_col / f"{dim}.png")
+                fig = plot_sensitivity_curve(df, dim, vlm)
+                save_fig(fig, vdir / "sensitivity" / f"{dim}.png")
+
+            # ----------------------------------------------------------------
+            # 2. Sensitivity curves for additional Exp2 score columns
+            # ----------------------------------------------------------------
+            for score_col in _EXP2_SCORE_COLS[1:]:  # skip overall_quality (done above)
+                for dim in _ALL_DIMENSIONS:
+                    if dim not in available_dims:
+                        continue
+                    fig = plot_sensitivity_curve(df, dim, vlm, exp2_score=score_col)
+                    save_fig(fig, vdir / "sensitivity" / score_col / f"{dim}.png")
 
         # ------------------------------------------------------------------
-        # 3. Exp1 vs Exp2 gap curves (one per dimension)
+        # 3. Exp1 vs Exp2 gap curves — only when both experiments are present
         # ------------------------------------------------------------------
-        print(f"[{vlm}] Exp1 vs Exp2 gap curves ...")
-        for dim in _ALL_DIMENSIONS:
-            if dim not in available_dims:
-                continue
-            fig = plot_exp_gap(df, dim, vlm=vlm)
-            save_fig(fig, vdir / "exp_gap" / f"{dim}.png")
+        if has_exp1 and has_exp2:
+            print(f"[{vlm}] Exp1 vs Exp2 gap curves ...")
+            for dim in _ALL_DIMENSIONS:
+                if dim not in available_dims:
+                    continue
+                fig = plot_exp_gap(df, dim, vlm=vlm)
+                save_fig(fig, vdir / "exp_gap" / f"{dim}.png")
 
         # ------------------------------------------------------------------
         # 4. Heatmaps
         # ------------------------------------------------------------------
-        print(f"[{vlm}] Heatmaps ...")
-        fig = plot_detection_heatmap(df, vlm)
-        save_fig(fig, vdir / "heatmaps" / "detection_rate.png")
+        if has_exp1:
+            print(f"[{vlm}] Detection heatmap (Exp1) ...")
+            fig = plot_detection_heatmap(df, vlm)
+            save_fig(fig, vdir / "heatmaps" / "detection_rate.png")
 
-        for score_col in _EXP2_SCORE_COLS:
-            fig = plot_score_heatmap(df, vlm, score_col=score_col)
-            save_fig(fig, vdir / "heatmaps" / f"score_{score_col}.png")
+        if has_exp2:
+            print(f"[{vlm}] Score heatmaps (Exp2) ...")
+            for score_col in _EXP2_SCORE_COLS:
+                fig = plot_score_heatmap(df, vlm, score_col=score_col)
+                save_fig(fig, vdir / "heatmaps" / f"score_{score_col}.png")
 
     # ------------------------------------------------------------------
-    # 5. Cross-model comparison heatmaps (if multiple models)
+    # 5. Cross-model comparison heatmaps (if multiple models, Exp2 needed)
     # ------------------------------------------------------------------
-    if len(vlms) > 1:
+    if len(vlms) > 1 and has_exp2:
         print("\nCross-model comparison ...")
         _plot_cross_model_comparison(df, vlms, output_dir)
 
@@ -213,13 +252,24 @@ def _plot_cross_model_comparison(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate all analysis figures from VLM evaluation results."
+        description="Generate analysis figures from VLM evaluation results.",
+        epilog="Supply at least one of --results-exp1 / --results-exp2.",
     )
     parser.add_argument(
-        "--results",
+        "--results-exp1",
         type=Path,
-        default=Path("data/results.jsonl"),
-        help="Path to results.jsonl (default: data/results.jsonl)",
+        default=None,
+        metavar="PATH",
+        help="Exp1 (perceptual sensitivity) results JSONL. "
+             "Enables: detection heatmaps, Exp1-vs-Exp2 gap curves (if exp2 also given).",
+    )
+    parser.add_argument(
+        "--results-exp2",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Exp2 (instruction-following) results JSONL. "
+             "Enables: sensitivity curves, score heatmaps, cross-model comparison.",
     )
     parser.add_argument(
         "--manifest",
@@ -242,8 +292,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.results_exp1 is None and args.results_exp2 is None:
+        parser.error("supply at least one of --results-exp1 / --results-exp2")
+
     run_analysis(
-        results_jsonl=args.results.resolve(),
+        results_exp1=args.results_exp1.resolve() if args.results_exp1 else None,
+        results_exp2=args.results_exp2.resolve() if args.results_exp2 else None,
         manifest_dir=args.manifest.resolve(),
         output_dir=args.output.resolve(),
         model_name=args.model_name,

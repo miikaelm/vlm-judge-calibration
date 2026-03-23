@@ -260,9 +260,9 @@ def plot_sensitivity_curve(
             .reset_index()
             .sort_values("numeric_magnitude")
         )
-        x = grouped["numeric_magnitude"].values
-        y = grouped["mean"].values
-        yerr = grouped["sem"].values
+        x = grouped["numeric_magnitude"].values.astype(float)
+        y = grouped["mean"].values.astype(float)
+        yerr = np.nan_to_num(grouped["sem"].values.astype(float))
         line, = ax.plot(x, y, marker="o", label=et)
         ax.fill_between(x, y - yerr, y + yerr, alpha=0.15, color=line.get_color())
 
@@ -340,9 +340,9 @@ def plot_exp_gap(
             .reset_index()
             .sort_values("numeric_magnitude")
         )
-        x = grouped["numeric_magnitude"].values
-        y = grouped["mean"].values
-        yerr = grouped["sem"].values
+        x = grouped["numeric_magnitude"].values.astype(float)
+        y = grouped["mean"].values.astype(float)
+        yerr = np.nan_to_num(grouped["sem"].values.astype(float))
         ax.plot(x, y, color=color, marker=marker, label=label, linewidth=2)
         ax.fill_between(x, y - yerr, y + yerr, alpha=0.15, color=color)
 
@@ -367,9 +367,9 @@ def plot_exp_gap(
             .reindex(shared_mags)
         )
         ax.fill_between(
-            shared_mags,
-            m2_mean.values,
-            m1_mean.values,
+            np.array(shared_mags, dtype=float),
+            m2_mean.values.astype(float),
+            m1_mean.values.astype(float),
             alpha=0.1,
             color="gray",
             label="gap",
