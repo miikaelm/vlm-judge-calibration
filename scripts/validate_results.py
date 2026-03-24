@@ -33,14 +33,19 @@ def load_results(results_path: Path) -> list[dict]:
 
 
 def load_stimulus_metadata(manifest_dir: Path) -> dict[str, dict]:
-    """Load metadata.json from every stimulus directory. Returns {stimulus_id: metadata}."""
-    meta = {}
-    for d in sorted(manifest_dir.iterdir()):
-        mpath = d / "metadata.json"
-        if d.is_dir() and mpath.exists():
-            m = json.loads(mpath.read_text(encoding="utf-8"))
-            meta[m["stimulus_id"]] = m
-    return meta
+    """Load manifest.jsonl and return {record_id: record} for all entries."""
+    for name in ("manifest.jsonl", "stimuli.jsonl"):
+        p = manifest_dir / name
+        if p.exists():
+            meta = {}
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        rec = json.loads(line)
+                        meta[rec["id"]] = rec
+            return meta
+    return {}
 
 
 def validate(results_path: Path, manifest_dir: Path | None) -> int:

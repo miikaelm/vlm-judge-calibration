@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import copy
 import json
+import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -245,6 +246,99 @@ def _apply_secondary_degs_to_styles(
 
 
 # ---------------------------------------------------------------------------
+# Edit instruction builders (ported / adapted from quantitative-text-editing
+# pair_builder.py — see _make_*_instruction functions there)
+# ---------------------------------------------------------------------------
+
+_ALIGNMENT_HUMAN: dict[str, str] = {
+    "top-left": "top-left corner", "top-center": "top center", "top-right": "top-right corner",
+    "center-left": "left center", "center": "center", "center-right": "right center",
+    "bottom-left": "bottom-left corner", "bottom-center": "bottom center", "bottom-right": "bottom-right corner",
+    "left": "left", "right": "right", "top": "top", "bottom": "bottom",
+}
+
+_SCALING_NATURAL: dict[tuple[str, str], list[str]] = {
+    ("up",   "small"): ["slightly bigger", "a bit larger", "a little bigger", "somewhat larger"],
+    ("up",   "large"): ["much bigger", "significantly larger", "a lot bigger", "considerably larger"],
+    ("down", "small"): ["slightly smaller", "a bit smaller", "a little smaller", "somewhat smaller"],
+    ("down", "large"): ["much smaller", "significantly smaller", "a lot smaller", "considerably smaller"],
+}
+
+
+def _edit_instruction(spec: "StimulusSpec", target_text: str, rng: random.Random) -> str:
+    """Build a natural-language instruction string describing the edit in spec."""
+    role = spec.target_role
+    role_ref = role.replace("_", " ")
+    text_ref = f"'{target_text}'"
+    ref = role_ref if rng.random() < 0.5 else text_ref
+    src = spec.source_value
+    tgt = spec.target_value
+
+    if spec.edit_type == "color":
+        if rng.random() < 0.5:
+            return f"Change the {role_ref} color to {tgt}"
+        return f"Change the color of {text_ref} to {tgt}"
+
+    elif spec.edit_type == "scale":
+        old_px = int(str(src))
+        new_px = int(str(tgt))
+        factor = new_px / old_px
+        pct = round(abs(factor - 1.0) * 100)
+        if rng.random() < 0.40:
+            key = ("up" if factor > 1.0 else "down", "large" if pct >= 40 else "small")
+            adj = rng.choice(_SCALING_NATURAL[key])
+            return f"Make the {ref} {adj}" if ref == role_ref else f"Make {ref} {adj}"
+        change_desc = f"Increase the font size by {pct}%" if factor > 1.0 else f"Reduce the font size by {pct}%"
+        return f"{change_desc} of the {ref}" if ref == role_ref else f"{change_desc} of {ref}"
+
+    elif spec.edit_type == "relocation":
+        pos_human = _ALIGNMENT_HUMAN.get(str(tgt), str(tgt))
+        verb = rng.choice(["Move", "Shift", "Position", "Place"])
+        return f"{verb} the {ref} to the {pos_human}" if ref == role_ref else f"{verb} {ref} to the {pos_human}"
+
+    elif spec.edit_type == "font_weight":
+        new_w = int(tgt) if isinstance(tgt, (int, float)) else tgt
+        is_bold = new_w in (700, 800, 900, "bold", "bolder")
+        if is_bold:
+            return f"Make the {ref} bold" if ref == role_ref else f"Make {ref} bold"
+        return f"Remove the bold style from the {ref}" if ref == role_ref else f"Remove bold from {ref}"
+
+    elif spec.edit_type == "italic":
+        if str(tgt) == "italic":
+            return f"Make the {ref} italic" if ref == role_ref else f"Make {ref} italic"
+        return f"Remove the italic style from the {ref}" if ref == role_ref else f"Remove italic from {ref}"
+
+    elif spec.edit_type == "letter_spacing":
+        def _px_val(v) -> float:
+            s = str(v).replace("px", "").replace("em", "").replace("rem", "").strip()
+            return float(s) if s not in ("", "normal") else 0.0
+        increasing = _px_val(tgt) >= _px_val(src)
+        if rng.random() < 0.40:
+            phrase = rng.choice(
+                ["spread the letters out more", "add more space between the letters", "space out the letters"]
+                if increasing else
+                ["tighten the letter spacing", "bring the letters closer together", "reduce the space between the letters"]
+            )
+            return f"For the {ref}, {phrase}" if ref == role_ref else f"For {ref}, {phrase}"
+        direction = "Increase" if increasing else "Decrease"
+        return f"{direction} the letter spacing of the {ref}" if ref == role_ref else f"{direction} the letter spacing of {ref}"
+
+    elif spec.edit_type == "rotation":
+        old_deg = float(str(src)) if src else 0.0
+        new_deg = float(str(tgt))
+        abs_deg = abs(new_deg)
+        direction = "clockwise" if new_deg > 0 else "counterclockwise"
+        if new_deg == 0.0:
+            return f"Straighten the {ref}" if ref == role_ref else f"Straighten {ref}"
+        if old_deg == 0.0 and abs_deg <= 15 and rng.random() < 0.35:
+            tilt = rng.choice(["slightly", "a little", "a bit"])
+            return f"Tilt the {ref} {tilt} {direction}" if ref == role_ref else f"Tilt {ref} {tilt} {direction}"
+        return f"Rotate the {ref} {abs_deg:.0f} degrees {direction}" if ref == role_ref else f"Rotate {ref} {abs_deg:.0f} degrees {direction}"
+
+    return f"Apply {spec.edit_type} edit to the {role_ref}."
+
+
+# ---------------------------------------------------------------------------
 # Manifest builders — one per edit type
 # ---------------------------------------------------------------------------
 
@@ -253,7 +347,6 @@ def _color_manifest(
     deg_configs: list[dict],
     rng=None,
 ) -> list[StimulusSpec]:
-    import random
     if rng is None:
         rng = random.Random(0)
 
@@ -339,7 +432,6 @@ def _color_manifest(
 
 
 def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
-    import random
     if rng is None:
         rng = random.Random(0)
     scale_degs = [d for d in deg_configs if d["dimension"] == "scale_error"]
@@ -427,11 +519,12 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
     Primary degradation: wrong alignment positions ordered by Manhattan distance from target.
     Secondary degradations: unrelated property errors while position is correct.
     """
-    import random
     if rng is None:
         rng = random.Random(0)
     dim_configs = _build_dim_configs(deg_configs)
-    secondary_dims = list(dim_configs.keys())  # alignment_error is not in _SECONDARY_DIMS
+    # alignment_error is not in _SECONDARY_DIMS; position_offset is excluded because a
+    # pixel nudge is meaningless when alignment is being changed wholesale (center → bottom-left).
+    secondary_dims = [d for d in dim_configs.keys() if d != "position_offset"]
 
     specs = []
     for layout in layouts:
@@ -538,7 +631,6 @@ def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dic
     Primary degradation: wrong weight values sorted by distance from target.
     Secondary degradations: unrelated property errors while weight is correct.
     """
-    import random
     if rng is None:
         rng = random.Random(0)
     fw_degs = [d for d in deg_configs if d["dimension"] == "font_weight"]
@@ -633,7 +725,6 @@ def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], r
     Primary degradation: wrong font-style values (oblique = visually close to italic, normal = clearly wrong).
     Secondary degradations: unrelated property errors while font-style is correct.
     """
-    import random
     if rng is None:
         rng = random.Random(0)
     dim_configs = _build_dim_configs(deg_configs)
@@ -727,7 +818,6 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
     Primary degradation: wrong letter-spacing values sorted by distance from target.
     Secondary degradations: unrelated property errors while letter-spacing is correct.
     """
-    import random
     if rng is None:
         rng = random.Random(0)
     ls_degs = [d for d in deg_configs if d["dimension"] == "letter_spacing"]
@@ -817,7 +907,6 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
 
 
 def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
-    import random
     if rng is None:
         rng = random.Random(0)
     rot_degs = [d for d in deg_configs if d["dimension"] == "rotation"]
@@ -875,7 +964,6 @@ def build_manifest(
     count: int | None = None,
     seed: int | None = None,
 ) -> list[StimulusSpec]:
-    import random
     rng = random.Random(seed)  # deterministic regardless of seed=None (uses os.urandom)
     specs = _MANIFEST_BUILDERS[edit_type](layouts, deg_configs, rng)
     rng.shuffle(specs)
@@ -904,14 +992,16 @@ async def generate_stimuli(
     output_dir: Path,
     render_config: RenderConfig,
 ) -> Path:
-    """Render all stimuli and write records to stimuli.jsonl.
+    """Render all stimuli and write one record per (spec, degradation) to manifest.jsonl.
 
-    Appends to an existing JSONL file (crash-safe, resume-capable).
-    Skips stimuli whose source image already exists.
+    Each line is fully self-contained: source/ground_truth/degraded image paths, all
+    edit metadata, all degradation metadata, and a natural-language edit_instruction.
+    Appends to an existing file (crash-safe, resume-capable).
+    Skips specs whose source image already exists.
     """
     image_dir = output_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = output_dir / "stimuli.jsonl"
+    jsonl_path = output_dir / "manifest.jsonl"
 
     n = len(specs)
     n_ok = n_skip = n_fail = 0
@@ -936,6 +1026,11 @@ async def generate_stimuli(
                 )
                 ground_truth_html = layout.html_builder(contents, correct_styles, bg)
 
+                # Deterministic per-spec rng for instruction phrasing variation.
+                inst_rng = random.Random(hash(spec.stimulus_id) & 0xFFFFFFFF)
+                target_text = str(contents.get(spec.target_role, spec.target_role))
+                instruction = _edit_instruction(spec, target_text, inst_rng)
+
                 try:
                     src_r = await renderer.render_html_string(
                         source_html, image_dir / f"{spec.stimulus_id}_source.png"
@@ -943,10 +1038,7 @@ async def generate_stimuli(
                     gt_r = await renderer.render_html_string(
                         ground_truth_html, image_dir / f"{spec.stimulus_id}_ground_truth.png"
                     )
-
-                    all_errors = src_r.errors + gt_r.errors
-                    degraded_images = {}
-                    degraded_records = []
+                    base_errors = src_r.errors + gt_r.errors
 
                     for deg in spec.degradations:
                         deg_styles = _apply_style_change(
@@ -960,38 +1052,39 @@ async def generate_stimuli(
                         deg_r = await renderer.render_html_string(
                             deg_html, image_dir / f"{spec.stimulus_id}_{deg['magnitude']}.png"
                         )
-                        all_errors += deg_r.errors
-                        degraded_images[deg["magnitude"]] = str(deg_r.image_path.relative_to(output_dir))
-                        degraded_records.append({
-                            "id": deg["id"],
-                            "magnitude": deg["magnitude"],
-                            "layer": deg["layer"],
-                            "params": deg["params"],
-                            "degraded_value": deg["degraded_value"],
-                        })
 
-                    record = {
-                        "stimulus_id": spec.stimulus_id,
-                        "layout": spec.layout_name,
-                        "layout_difficulty": layout.difficulty,
-                        "edit_type": spec.edit_type,
-                        "target_role": spec.target_role,
-                        "edit": {
-                            "property": spec.edit_property,
-                            "source_value": spec.source_value,
-                            "target_value": spec.target_value,
-                        },
-                        "degradation_dimension": spec.deg_dimension,
-                        "degradations": degraded_records,
-                        "source_image": str(src_r.image_path.relative_to(output_dir)),
-                        "ground_truth_image": str(gt_r.image_path.relative_to(output_dir)),
-                        "degraded_images": degraded_images,
-                    }
-                    if all_errors:
-                        record["render_errors"] = all_errors
+                        record: dict = {
+                            "id": f"{spec.stimulus_id}_{deg['magnitude']}",
+                            "edit_type": spec.edit_type,
+                            "layout": spec.layout_name,
+                            "layout_difficulty": layout.difficulty,
+                            "target_role": spec.target_role,
+                            "edit_instruction": instruction,
+                            "edit": {
+                                "property": spec.edit_property,
+                                "source_value": spec.source_value,
+                                "target_value": spec.target_value,
+                            },
+                            "degradation": {
+                                "dimension": spec.deg_dimension,
+                                "id": deg["id"],
+                                "magnitude": deg["magnitude"],
+                                "layer": deg["layer"],
+                                "params": deg["params"],
+                                "degraded_value": deg["degraded_value"],
+                                "secondary_degs": [s["id"] for s in deg.get("secondary_degs", [])],
+                            },
+                            "source_image": str(src_r.image_path.relative_to(output_dir)),
+                            "ground_truth_image": str(gt_r.image_path.relative_to(output_dir)),
+                            "degraded_image": str(deg_r.image_path.relative_to(output_dir)),
+                        }
+                        all_errors = base_errors + deg_r.errors
+                        if all_errors:
+                            record["render_errors"] = all_errors
 
-                    f.write(json.dumps(record) + "\n")
-                    print(f"  [{i}/{n}] OK: {spec.stimulus_id}")
+                        f.write(json.dumps(record) + "\n")
+
+                    print(f"  [{i}/{n}] OK: {spec.stimulus_id} ({len(spec.degradations)} records)")
                     n_ok += 1
 
                 except Exception as e:
@@ -1055,7 +1148,7 @@ def main():
 
     parser.add_argument(
         "--output-dir", default="data/generated",
-        help="Output directory for images/ and stimuli.jsonl (default: data/generated)",
+        help="Output directory for images/ and manifest.jsonl (default: data/generated)",
     )
     parser.add_argument(
         "--seed", type=int, default=None,
@@ -1179,7 +1272,7 @@ def main():
     print(f"\nOutput      : {output_dir}\n")
 
     jsonl_path = generate_stimuli_sync(all_specs, output_dir)
-    print(f"JSONL       : {jsonl_path}")
+    print(f"Manifest    : {jsonl_path}")
 
 
 if __name__ == "__main__":

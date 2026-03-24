@@ -49,8 +49,24 @@ from src.evaluation.parser import log_parse_failure, parse_response
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _find_stimulus_dirs(manifest_dir: Path) -> list[Path]:
-    return sorted(d for d in manifest_dir.iterdir() if d.is_dir() and (d / "metadata.json").exists())
+def _find_manifest(manifest_dir: Path) -> Path:
+    """Return path to manifest.jsonl inside manifest_dir (falls back to stimuli.jsonl)."""
+    for name in ("manifest.jsonl", "stimuli.jsonl"):
+        p = manifest_dir / name
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"No manifest.jsonl found in {manifest_dir}")
+
+
+def _load_manifest(manifest_dir: Path) -> list[dict]:
+    manifest_path = _find_manifest(manifest_dir)
+    records = []
+    with open(manifest_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    return records
 
 
 def _load_prompt(prompts_path: Path, variant: str) -> dict:
@@ -209,32 +225,30 @@ def _process_stimuli(
     variant: str,
     output_path: Path,
     parse_failures_path: Path,
-    stimulus_dirs: list[Path],
+    records: list[dict],
     model_name_or_path: str,
     max_new_tokens: int,
 ) -> None:
-    """Run inference for all stimuli under one variant and append to output_path."""
+    """Run inference for all manifest records under one variant and append to output_path."""
     prompts_path = Path(__file__).parent.parent / "configs" / "vlm_prompts.yaml"
     prompt = _load_prompt(prompts_path, variant)
 
-    n = len(stimulus_dirs)
+    n = len(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     n_ok = n_fail = 0
 
-    for i, stimulus_dir in enumerate(stimulus_dirs, 1):
-        meta = json.loads((stimulus_dir / "metadata.json").read_text(encoding="utf-8"))
-        stimulus_id = meta["stimulus_id"]
-        files = meta["files"]
-        instruction = meta.get("edit_instruction", "")
+    for i, record in enumerate(records, 1):
+        stimulus_id = record["id"]
+        instruction = record.get("edit_instruction", "")
 
         print(f"[run_qwen] [{i}/{n}] {stimulus_id} ({variant}) ...", end=" ", flush=True)
 
         if variant == "experiment_2":
-            img1 = Image.open(stimulus_dir / files["source"]).convert("RGB")
-            img2 = Image.open(stimulus_dir / files["degraded"]).convert("RGB")
+            img1 = Image.open(manifest_dir / record["source_image"]).convert("RGB")
+            img2 = Image.open(manifest_dir / record["degraded_image"]).convert("RGB")
         else:  # experiment_1
-            img1 = Image.open(stimulus_dir / files["ground_truth"]).convert("RGB")
-            img2 = Image.open(stimulus_dir / files["degraded"]).convert("RGB")
+            img1 = Image.open(manifest_dir / record["ground_truth_image"]).convert("RGB")
+            img2 = Image.open(manifest_dir / record["degraded_image"]).convert("RGB")
 
         messages = _build_messages(prompt, variant, instruction, img1, img2)
 
@@ -257,12 +271,12 @@ def _process_stimuli(
             n_fail += 1
             log_parse_failure(raw_response, stimulus_id, parse_failures_path)
 
-        record = _build_result_record(
+        result_record = _build_result_record(
             stimulus_id, model_name_or_path, variant,
             parsed, raw_response, prompt_tokens, completion_tokens,
         )
         with open(output_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+            f.write(json.dumps(result_record) + "\n")
 
     print(f"\n[run_qwen] {variant}: {n_ok} succeeded, {n_fail} failed.")
     print(f"[run_qwen] Results -> {output_path}")
@@ -280,11 +294,11 @@ def run(
     torch_dtype: str,
     max_new_tokens: int,
 ) -> None:
-    stimulus_dirs = _find_stimulus_dirs(manifest_dir)
+    records = _load_manifest(manifest_dir)
     if limit is not None:
-        stimulus_dirs = stimulus_dirs[:limit]
-    n = len(stimulus_dirs)
-    print(f"[run_qwen] {n} stimuli | variants={variants} | model={model_name_or_path}")
+        records = records[:limit]
+    n = len(records)
+    print(f"[run_qwen] {n} records | variants={variants} | model={model_name_or_path}")
 
     model, processor = _load_model(model_name_or_path, device, torch_dtype)
 
@@ -292,7 +306,7 @@ def run(
         print(f"\n[run_qwen] === Running {variant} ===")
         _process_stimuli(
             model, processor, manifest_dir, variant,
-            output_path, parse_failures_path, stimulus_dirs,
+            output_path, parse_failures_path, records,
             model_name_or_path, max_new_tokens,
         )
 
