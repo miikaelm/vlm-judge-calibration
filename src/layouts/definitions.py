@@ -90,9 +90,11 @@ def _build_solo_headline(
 
 register(LayoutDefinition(
     name="solo_headline",
+    id="sh",
     difficulty="easy",
     roles=["headline"],
     supported_edits=["color", "scale", "rotation", "alignment"],
+    primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
             color_editable=True,
@@ -155,9 +157,11 @@ def _build_title_subtitle(
 
 register(LayoutDefinition(
     name="title_subtitle",
+    id="ts",
     difficulty="easy",
     roles=["title", "subtitle"],
     supported_edits=["color", "scale"],
+    primary_role="subtitle",  # title-type edits covered by solo_headline; this tests secondary text
     role_constraints={
         "title":    RoleConstraints(color_editable=True, can_scale=True),
         "subtitle": RoleConstraints(color_editable=True, can_scale=True),
@@ -216,9 +220,11 @@ def _build_header_body(
 
 register(LayoutDefinition(
     name="header_body",
+    id="hb",
     difficulty="easy",
     roles=["header", "body"],
     supported_edits=["color", "scale"],
+    primary_role="body",  # tests body/paragraph text color, smaller and lower contrast than a headline
     role_constraints={
         "header": RoleConstraints(color_editable=True, can_scale=True),
         "body":   RoleConstraints(color_editable=True, can_scale=True),
@@ -283,9 +289,11 @@ def _build_title_byline(
 
 register(LayoutDefinition(
     name="title_byline",
+    id="tb",
     difficulty="medium",
     roles=["title", "byline"],
     supported_edits=["color", "scale", "rotation", "alignment"],
+    primary_role="byline",  # tests absolutely-positioned small text; title-type covered by other layouts
     role_constraints={
         "title":  RoleConstraints(
             color_editable=True, can_scale=True,
@@ -354,9 +362,11 @@ def _build_name_card(
 
 register(LayoutDefinition(
     name="name_card",
+    id="nc",
     difficulty="medium",
     roles=["name", "job_title", "organization"],
     supported_edits=["color", "scale"],
+    primary_role="name",
     role_constraints={
         "name":         RoleConstraints(color_editable=True, can_scale=True),
         "job_title":    RoleConstraints(color_editable=True, can_scale=True),
@@ -430,9 +440,11 @@ def _build_quote_attribution(
 
 register(LayoutDefinition(
     name="quote_attribution",
+    id="qa",
     difficulty="medium",
     roles=["quote", "attribution"],
     supported_edits=["color", "scale"],
+    primary_role="quote",
     role_constraints={
         "quote":       RoleConstraints(color_editable=True, can_scale=True),
         "attribution": RoleConstraints(color_editable=True, can_scale=True),
@@ -498,9 +510,11 @@ def _build_corner_badge(
 
 register(LayoutDefinition(
     name="corner_badge",
+    id="cb",
     difficulty="medium",
     roles=["label", "badge"],
     supported_edits=["color", "scale", "alignment"],
+    primary_role="badge",  # tests the small corner-positioned element against a dark background
     role_constraints={
         "label": RoleConstraints(color_editable=True, can_scale=True),
         "badge": RoleConstraints(
@@ -574,9 +588,11 @@ def _build_split_panel(
 
 register(LayoutDefinition(
     name="split_panel",
+    id="sp",
     difficulty="medium",
     roles=["label", "descriptor"],
     supported_edits=["color", "scale", "alignment"],
+    primary_role="label",
     role_constraints={
         "label":      RoleConstraints(color_editable=True, can_scale=True),
         "descriptor": RoleConstraints(
@@ -642,9 +658,11 @@ def _build_banner_caption(
 
 register(LayoutDefinition(
     name="banner_caption",
+    id="bc",
     difficulty="medium",
     roles=["banner", "caption"],
     supported_edits=["color", "scale", "alignment"],
+    primary_role="banner",
     role_constraints={
         "banner": RoleConstraints(color_editable=True, can_scale=True),
         "caption": RoleConstraints(
@@ -713,9 +731,11 @@ def _build_two_column_heading(
 
 register(LayoutDefinition(
     name="two_column_heading",
+    id="tch",
     difficulty="multi",
     roles=["left_heading", "right_heading"],
     supported_edits=["color", "scale", "rotation"],
+    primary_role="left_heading",
     role_constraints={
         "left_heading":  RoleConstraints(
             color_editable=True, can_scale=True,
@@ -762,9 +782,11 @@ register(LayoutDefinition(
 
 register(LayoutDefinition(
     name="low_contrast_centered",
+    id="lcc",
     difficulty="hard",
     roles=["headline"],
     supported_edits=["color", "scale"],
+    primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(color_editable=True, can_scale=True),
     },
@@ -785,3 +807,178 @@ register(LayoutDefinition(
     html_builder=_build_solo_headline,
     notes="Dark gradient bg, muted purple serif, low contrast. Hard tier. Challenges VLMs on color perception.",
 ))
+
+
+# ---------------------------------------------------------------------------
+# Layout 12: gradient_headline — single heading on a vibrant gradient bg
+#
+# Supports: color, scale, rotation, alignment.
+# Reuses _build_solo_headline. Easy tier with a gradient background.
+# Tests VLM color perception against a non-white, non-solid backdrop.
+# ---------------------------------------------------------------------------
+
+register(LayoutDefinition(
+    name="gradient_headline",
+    id="gh",
+    difficulty="easy",
+    roles=["headline"],
+    supported_edits=["color", "scale", "rotation", "alignment"],
+    primary_role="headline",
+    role_constraints={
+        "headline": RoleConstraints(
+            color_editable=True,
+            can_scale=True,
+            can_rotate=True,
+            rotation_range=(-25, 25),
+            can_align=True,
+            alignment_positions=[
+                "top-left", "top-center", "top-right",
+                "center-left", "center", "center-right",
+                "bottom-left", "bottom-center", "bottom-right",
+            ],
+        ),
+    },
+    role_base_styles={
+        "headline": {
+            "color": "#FFFFFF",
+            "font_size_px": 64,
+            "font_family": "Arial, Helvetica, sans-serif",
+            "font_weight": "bold",
+            "font_style": "normal",
+            "letter_spacing": "0.02em",
+            "alignment": "center",
+        },
+    },
+    default_content={"headline": "Sample Heading"},
+    background="linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    background_type="gradient",
+    html_builder=_build_solo_headline,
+    notes="White headline on purple-blue gradient. Easy tier. Tests color against gradient bg.",
+))
+
+
+# ---------------------------------------------------------------------------
+# Layout 13: pattern_headline — single heading on a grid-pattern bg
+#
+# Supports: color, scale, rotation, alignment.
+# Reuses _build_solo_headline. Easy tier with a repeating CSS grid pattern.
+# Tests VLM color perception against a textured (non-uniform) backdrop.
+# ---------------------------------------------------------------------------
+
+register(LayoutDefinition(
+    name="pattern_headline",
+    id="ph",
+    difficulty="easy",
+    roles=["headline"],
+    supported_edits=["color", "scale", "rotation", "alignment"],
+    primary_role="headline",
+    role_constraints={
+        "headline": RoleConstraints(
+            color_editable=True,
+            can_scale=True,
+            can_rotate=True,
+            rotation_range=(-25, 25),
+            can_align=True,
+            alignment_positions=[
+                "top-left", "top-center", "top-right",
+                "center-left", "center", "center-right",
+                "bottom-left", "bottom-center", "bottom-right",
+            ],
+        ),
+    },
+    role_base_styles={
+        "headline": {
+            "color": "#1A1A1A",
+            "font_size_px": 64,
+            "font_family": "Arial, Helvetica, sans-serif",
+            "font_weight": "bold",
+            "font_style": "normal",
+            "letter_spacing": "0.02em",
+            "alignment": "center",
+        },
+    },
+    default_content={"headline": "Sample Heading"},
+    background=(
+        "radial-gradient(circle, rgba(80,40,120,0.22) 5px, transparent 5px) 0 0 / 32px 32px, "
+        "radial-gradient(circle, rgba(80,40,120,0.10) 5px, transparent 5px) 16px 16px / 32px 32px, "
+        "#f0ede8"
+    ),
+    background_type="pattern",
+    html_builder=_build_solo_headline,
+    notes="Dark headline on offset polka-dot pattern (warm off-white, purple dots). Easy tier. Tests color against patterned bg.",
+))
+
+
+# ---------------------------------------------------------------------------
+# Layout 14: image_bg_headline — single heading on a photo-like complex bg
+#
+# Supports: color, scale, rotation, alignment.
+# Reuses _build_solo_headline. Medium tier — complex multi-gradient bg simulates
+# a natural scene (sky-to-ground), creating more visual noise around the text.
+# ---------------------------------------------------------------------------
+
+register(LayoutDefinition(
+    name="image_bg_headline",
+    id="ibh",
+    difficulty="medium",
+    roles=["headline"],
+    supported_edits=["color", "scale", "rotation", "alignment"],
+    primary_role="headline",
+    role_constraints={
+        "headline": RoleConstraints(
+            color_editable=True,
+            can_scale=True,
+            can_rotate=True,
+            rotation_range=(-25, 25),
+            can_align=True,
+            alignment_positions=[
+                "top-left", "top-center", "top-right",
+                "center-left", "center", "center-right",
+                "bottom-left", "bottom-center", "bottom-right",
+            ],
+        ),
+    },
+    role_base_styles={
+        "headline": {
+            "color": "#FFFFFF",
+            "font_size_px": 64,
+            "font_family": "Arial, Helvetica, sans-serif",
+            "font_weight": "bold",
+            "font_style": "normal",
+            "letter_spacing": "0.02em",
+            "alignment": "center",
+            "text_shadow": "0 2px 8px rgba(0,0,0,0.6)",
+        },
+    },
+    default_content={"headline": "Sample Heading"},
+    background=(
+        "linear-gradient(rgba(17,201,111,0.29), rgba(17,201,111,0.29)), "
+        "url('https://picsum.photos/seed/2250/800/600') center/cover"
+    ),
+    background_type="image",
+    html_builder=_build_solo_headline,
+    notes=(
+        "White headline (with shadow) on real photo (picsum seed 2250) with green tint overlay. "
+        "Medium tier. Tests color perception against a photographic background."
+    ),
+))
+
+
+# ---------------------------------------------------------------------------
+# Fixed layout sets: 1 or more layouts per (edit_type, difficulty) cell.
+# ---------------------------------------------------------------------------
+
+from .core import LAYOUT_SETS, validate_layout_sets  # noqa: E402
+
+LAYOUT_SETS.update({
+    # Color: 3 easy (solid / gradient / pattern bg) + 1 medium (image-like bg) = 4 total
+    ("color", "easy"):   ["solo_headline", "gradient_headline", "pattern_headline"],
+    ("color", "medium"): ["image_bg_headline"],
+    ("scale", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
+    ("scale", "medium"): ["corner_badge",  "name_card",      "title_byline"],
+    # rotation × easy:   only solo_headline supports rotation in easy tier — needs 2 more
+    # rotation × medium: title_byline supports rotation, but needs 2 more medium rotation layouts
+    # alignment cells:   alignment edit type not yet wired into generate.py manifests
+})
+
+validate_layout_sets()

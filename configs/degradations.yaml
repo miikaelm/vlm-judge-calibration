@@ -1,12 +1,20 @@
 # Degradation configurations — full sweep
-# HTML-layer: ~69 configs | Image-layer: 9 configs | Total: 78 configs
+# HTML-layer: ~74 configs | Image-layer: 9 configs | Total: 83 configs
 # Each config combines with edit_types × templates to form the stimulus table.
 
 degradations:
 
   # ---------------------------------------------------------------------------
-  # COLOR OFFSET — ΔE in CIEDE2000 (5 magnitudes)
+  # COLOR OFFSET — ΔE in CIEDE2000 (10 magnitudes: 1, 2, 3, 5, 7, 10, 15, 20, 30, 40)
   # ---------------------------------------------------------------------------
+  - id: color_offset_micro
+    dimension: color_offset
+    magnitude: delta_e_1
+    layer: html
+    params:
+      delta_e: 1.0
+    notes: "Sub-threshold color shift (ΔE~1)"
+
   - id: color_offset_tiny
     dimension: color_offset
     magnitude: delta_e_2
@@ -14,6 +22,14 @@ degradations:
     params:
       delta_e: 2.0
     notes: "Near-threshold color shift (ΔE~2)"
+
+  - id: color_offset_subtle
+    dimension: color_offset
+    magnitude: delta_e_3
+    layer: html
+    params:
+      delta_e: 3.0
+    notes: "Subtle color shift (ΔE~3)"
 
   - id: color_offset_small
     dimension: color_offset
@@ -23,6 +39,14 @@ degradations:
       delta_e: 5.0
     notes: "Just-noticeable color shift (ΔE~5)"
 
+  - id: color_offset_moderate
+    dimension: color_offset
+    magnitude: delta_e_7
+    layer: html
+    params:
+      delta_e: 7.0
+    notes: "Moderate color shift (ΔE~7)"
+
   - id: color_offset_medium
     dimension: color_offset
     magnitude: delta_e_10
@@ -30,6 +54,14 @@ degradations:
     params:
       delta_e: 10.0
     notes: "Clearly visible color shift (ΔE~10)"
+
+  - id: color_offset_strong
+    dimension: color_offset
+    magnitude: delta_e_15
+    layer: html
+    params:
+      delta_e: 15.0
+    notes: "Strong color shift (ΔE~15)"
 
   - id: color_offset_large
     dimension: color_offset
@@ -39,13 +71,21 @@ degradations:
       delta_e: 20.0
     notes: "Large color shift (ΔE~20)"
 
+  - id: color_offset_very_large
+    dimension: color_offset
+    magnitude: delta_e_30
+    layer: html
+    params:
+      delta_e: 30.0
+    notes: "Very large color shift (ΔE~30)"
+
   - id: color_offset_xlarge
     dimension: color_offset
     magnitude: delta_e_40
     layer: html
     params:
       delta_e: 40.0
-    notes: "Very large, obviously wrong color (ΔE~40)"
+    notes: "Obviously wrong color (ΔE~40)"
 
   # ---------------------------------------------------------------------------
   # POSITION OFFSET — 4 directions × 3 magnitudes = 12 configs

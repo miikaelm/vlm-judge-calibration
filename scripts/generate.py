@@ -46,8 +46,8 @@ from layouts import (
     LayoutDefinition,
     all_layouts,
     get_layout,
-    get_layouts_for_edit,
-    get_layouts_by_difficulty,
+    get_layouts_for_edit_difficulty,
+    get_layouts_for_edit_all_difficulties,
 )
 
 
@@ -115,117 +115,231 @@ class StimulusSpec:
     edit_property: str       # CSS property key in role style dict
     source_value: object     # value in source (base) layout
     target_value: object     # value in ground_truth
-    deg_id: str
-    deg_dimension: str
-    deg_magnitude: str
-    deg_layer: str
-    deg_params: dict = field(default_factory=dict)
-    degraded_value: object = None  # value in degraded image
+    deg_dimension: str       # degradation dimension (e.g. "color_offset")
+    # All degradation levels for this stimulus.
+    # Each entry: {id, magnitude, layer, params, degraded_value, secondary_degs}
+    degradations: list = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Secondary degradation helpers
+# ---------------------------------------------------------------------------
+
+# Dimensions (other than the primary edit dim) that can be applied as style-dict
+# overrides without needing element IDs or HTML surgery.
+_SECONDARY_DIMS = ["scale_error", "rotation", "font_weight", "font_style", "letter_spacing", "opacity"]
+
+# How many secondary degradation configs to apply per stimulus.
+_N_SECONDARY = 5
+
+
+def _build_secondary_pool(deg_configs: list[dict]) -> dict[str, list[dict]]:
+    """Return {dimension: [3 representative configs]} for style-dict-applicable dims."""
+    pool: dict[str, list[dict]] = {}
+    for dim in _SECONDARY_DIMS:
+        candidates = [
+            d for d in deg_configs
+            if d["dimension"] == dim and d.get("layer", "html") == "html"
+        ]
+        if not candidates:
+            continue
+        n = len(candidates)
+        if n >= 3:
+            indices = [0, n // 2, n - 1]
+            pool[dim] = [candidates[i] for i in indices]
+        else:
+            pool[dim] = candidates
+    return pool
+
+
+def _apply_secondary_degs_to_styles(
+    styles: dict, role: str, secondary_degs: list[dict]
+) -> dict:
+    """Return a deep copy of styles with secondary degradation overrides applied."""
+    import copy
+    styles = copy.deepcopy(styles)
+    base_size = styles[role].get("font_size_px", 36)
+    for deg in secondary_degs:
+        dim = deg["dimension"]
+        params = deg["params"]
+        if dim == "scale_error":
+            error_pct = params["scale_error_pct"]
+            new_size = max(12, min(200, round(base_size * (1 + error_pct / 100))))
+            styles[role]["font_size_px"] = new_size
+        elif dim == "rotation":
+            styles[role]["rotation_deg"] = params["angle_deg"]
+        elif dim == "font_weight":
+            styles[role]["font_weight"] = params["font_weight"]
+        elif dim == "font_style":
+            styles[role]["font_style"] = params["font_style"]
+        elif dim == "letter_spacing":
+            styles[role]["letter_spacing"] = f"{params['letter_spacing_px']}px"
+        elif dim == "opacity":
+            styles[role]["opacity"] = params["opacity"]
+    return styles
 
 
 # ---------------------------------------------------------------------------
 # Manifest builders — one per edit type
 # ---------------------------------------------------------------------------
 
-def _color_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict]) -> list[StimulusSpec]:
+def _color_manifest(
+    layouts: list[LayoutDefinition],
+    deg_configs: list[dict],
+    rng=None,
+) -> list[StimulusSpec]:
+    import random
+    if rng is None:
+        rng = random.Random(0)
+
     color_degs = [d for d in deg_configs if d["dimension"] == "color_offset"]
+    secondary_pool = _build_secondary_pool(deg_configs)
+    secondary_dims = list(secondary_pool.keys())
+
     specs = []
     for layout in layouts:
         if "color" not in layout.supported_edits:
             continue
-        for role, rc in layout.role_constraints.items():
-            if not rc.color_editable:
-                continue
-            source_color = layout.role_base_styles[role]["color"]
-            for i, target_color in enumerate(_COLOR_TARGETS):
-                if target_color.upper() == source_color.upper():
-                    continue
-                for deg in color_degs:
-                    delta_l = deg["params"]["delta_e"]
-                    degraded_color = _shift_color_lab(target_color, delta_l)
-                    specs.append(StimulusSpec(
-                        stimulus_id=f"{layout.name}__{role}__color__{i:02d}__{deg['id']}",
-                        layout_name=layout.name,
-                        edit_type="color",
-                        target_role=role,
-                        edit_property="color",
-                        source_value=source_color,
-                        target_value=target_color,
-                        deg_id=deg["id"],
-                        deg_dimension=deg["dimension"],
-                        deg_magnitude=deg["magnitude"],
-                        deg_layer=deg.get("layer", "html"),
-                        deg_params=deg["params"],
-                        degraded_value=degraded_color,
-                    ))
+        role = layout.primary_role
+        source_color = layout.role_base_styles[role]["color"]
+        available_colors = [c for c in _COLOR_TARGETS if c.upper() != source_color.upper()]
+        target_color = rng.choice(available_colors)
+
+        # 1. Primary spec: color_offset only — no secondary degradations
+        color_degradations = []
+        for deg in color_degs:
+            delta_l = deg["params"]["delta_e"]
+            degraded_color = _shift_color_lab(target_color, delta_l)
+            color_degradations.append({
+                "id": deg["id"],
+                "magnitude": deg["magnitude"],
+                "layer": deg.get("layer", "html"),
+                "params": deg["params"],
+                "degraded_value": degraded_color,
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"color_{layout.id}_color_offset",
+            layout_name=layout.name,
+            edit_type="color",
+            target_role=role,
+            edit_property="color",
+            source_value=source_color,
+            target_value=target_color,
+            deg_dimension="color_offset",
+            degradations=color_degradations,
+        ))
+
+        # 2. Unrelated specs: color is correct, one unrelated property is degraded per spec.
+        # Sample _N_SECONDARY dims; each dim becomes its own spec with 3 magnitude levels.
+        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
+        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        for dim in sampled_dims:
+            unrelated_degradations = []
+            for deg in secondary_pool[dim]:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_color,  # color is perfectly correct
+                    "secondary_degs": [deg],          # only this unrelated dim changes
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"color_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="color",
+                target_role=role,
+                edit_property="color",
+                source_value=source_color,
+                target_value=target_color,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
     return specs
 
 
-def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict]) -> list[StimulusSpec]:
+def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+    import random
+    if rng is None:
+        rng = random.Random(0)
     scale_degs = [d for d in deg_configs if d["dimension"] == "scale_error"]
     specs = []
     for layout in layouts:
         if "scale" not in layout.supported_edits:
             continue
-        for role, rc in layout.role_constraints.items():
-            if not rc.can_scale:
-                continue
-            base_size = layout.role_base_styles[role]["font_size_px"]
-            for i, multiplier in enumerate(_SCALE_MULTIPLIERS):
-                target_size = int(round(base_size * multiplier))
-                target_size = max(12, min(200, target_size))
-                for deg in scale_degs:
-                    error_pct = deg["params"]["scale_error_pct"]
-                    degraded_size = int(round(target_size * (1 + error_pct / 100)))
-                    degraded_size = max(12, min(200, degraded_size))
-                    specs.append(StimulusSpec(
-                        stimulus_id=f"{layout.name}__{role}__scale__{i:02d}__{deg['id']}",
-                        layout_name=layout.name,
-                        edit_type="scale",
-                        target_role=role,
-                        edit_property="font_size_px",
-                        source_value=base_size,
-                        target_value=target_size,
-                        deg_id=deg["id"],
-                        deg_dimension=deg["dimension"],
-                        deg_magnitude=deg["magnitude"],
-                        deg_layer=deg.get("layer", "html"),
-                        deg_params=deg["params"],
-                        degraded_value=degraded_size,
-                    ))
+        role = layout.primary_role
+        base_size = layout.role_base_styles[role]["font_size_px"]
+        multiplier = rng.choice(_SCALE_MULTIPLIERS)
+        target_size = max(12, min(200, int(round(base_size * multiplier))))
+
+        degradations = []
+        for deg in scale_degs:
+            error_pct = deg["params"]["scale_error_pct"]
+            degraded_size = max(12, min(200, int(round(target_size * (1 + error_pct / 100)))))
+            degradations.append({
+                "id": deg["id"],
+                "magnitude": deg["magnitude"],
+                "layer": deg.get("layer", "html"),
+                "params": deg["params"],
+                "degraded_value": degraded_size,
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"scale_{layout.id}_scale_error",
+            layout_name=layout.name,
+            edit_type="scale",
+            target_role=role,
+            edit_property="font_size_px",
+            source_value=base_size,
+            target_value=target_size,
+            deg_dimension="scale_error",
+            degradations=degradations,
+        ))
     return specs
 
 
-def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict]) -> list[StimulusSpec]:
+def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+    import random
+    if rng is None:
+        rng = random.Random(0)
     rot_degs = [d for d in deg_configs if d["dimension"] == "rotation"]
     specs = []
     for layout in layouts:
         if "rotation" not in layout.supported_edits:
             continue
-        for role, rc in layout.role_constraints.items():
-            if not rc.can_rotate:
-                continue
-            lo, hi = rc.rotation_range
-            for i, target_deg in enumerate(_ROTATION_TARGETS_DEG):
-                target_deg = max(lo, min(hi, target_deg))
-                for deg in rot_degs:
-                    error_deg = deg["params"]["angle_deg"]
-                    degraded_deg = float(target_deg + error_deg)
-                    specs.append(StimulusSpec(
-                        stimulus_id=f"{layout.name}__{role}__rotation__{i:02d}__{deg['id']}",
-                        layout_name=layout.name,
-                        edit_type="rotation",
-                        target_role=role,
-                        edit_property="rotation_deg",
-                        source_value=0.0,
-                        target_value=float(target_deg),
-                        deg_id=deg["id"],
-                        deg_dimension=deg["dimension"],
-                        deg_magnitude=deg["magnitude"],
-                        deg_layer=deg.get("layer", "html"),
-                        deg_params=deg["params"],
-                        degraded_value=degraded_deg,
-                    ))
+        role = layout.primary_role
+        rc = layout.role_constraints[role]
+        lo, hi = rc.rotation_range
+        raw = rng.choice(_ROTATION_TARGETS_DEG)
+        target_deg = float(max(lo, min(hi, raw)))
+
+        degradations = []
+        for deg in rot_degs:
+            error_deg = deg["params"]["angle_deg"]
+            degradations.append({
+                "id": deg["id"],
+                "magnitude": deg["magnitude"],
+                "layer": deg.get("layer", "html"),
+                "params": deg["params"],
+                "degraded_value": float(target_deg + error_deg),
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"rotation_{layout.id}_rotation",
+            layout_name=layout.name,
+            edit_type="rotation",
+            target_role=role,
+            edit_property="rotation_deg",
+            source_value=0.0,
+            target_value=target_deg,
+            deg_dimension="rotation",
+            degradations=degradations,
+        ))
     return specs
 
 
@@ -244,10 +358,9 @@ def build_manifest(
     seed: int | None = None,
 ) -> list[StimulusSpec]:
     import random
-    specs = _MANIFEST_BUILDERS[edit_type](layouts, deg_configs)
-    if seed is not None:
-        rng = random.Random(seed)
-        rng.shuffle(specs)
+    rng = random.Random(seed)  # deterministic regardless of seed=None (uses os.urandom)
+    specs = _MANIFEST_BUILDERS[edit_type](layouts, deg_configs, rng)
+    rng.shuffle(specs)
     if count is not None:
         specs = specs[:count]
     return specs
@@ -304,16 +417,40 @@ async def generate_stimuli(
                     base_styles, spec.target_role, spec.edit_property, spec.target_value
                 )
                 ground_truth_html = layout.html_builder(contents, correct_styles, bg)
-                degraded_styles = _apply_style_change(
-                    correct_styles, spec.target_role, spec.edit_property, spec.degraded_value
-                )
-                degraded_html = layout.html_builder(contents, degraded_styles, bg)
 
                 try:
-                    src_r, gt_r, deg_r = await renderer.render_triple(
-                        source_html, ground_truth_html, degraded_html,
-                        image_dir, spec.stimulus_id,
+                    src_r = await renderer.render_html_string(
+                        source_html, image_dir / f"{spec.stimulus_id}_source.png"
                     )
+                    gt_r = await renderer.render_html_string(
+                        ground_truth_html, image_dir / f"{spec.stimulus_id}_ground_truth.png"
+                    )
+
+                    all_errors = src_r.errors + gt_r.errors
+                    degraded_images = {}
+                    degraded_records = []
+
+                    for deg in spec.degradations:
+                        deg_styles = _apply_style_change(
+                            correct_styles, spec.target_role, spec.edit_property, deg["degraded_value"]
+                        )
+                        if deg.get("secondary_degs"):
+                            deg_styles = _apply_secondary_degs_to_styles(
+                                deg_styles, spec.target_role, deg["secondary_degs"]
+                            )
+                        deg_html = layout.html_builder(contents, deg_styles, bg)
+                        deg_r = await renderer.render_html_string(
+                            deg_html, image_dir / f"{spec.stimulus_id}_{deg['magnitude']}.png"
+                        )
+                        all_errors += deg_r.errors
+                        degraded_images[deg["magnitude"]] = str(deg_r.image_path.relative_to(output_dir))
+                        degraded_records.append({
+                            "id": deg["id"],
+                            "magnitude": deg["magnitude"],
+                            "layer": deg["layer"],
+                            "params": deg["params"],
+                            "degraded_value": deg["degraded_value"],
+                        })
 
                     record = {
                         "stimulus_id": spec.stimulus_id,
@@ -326,21 +463,14 @@ async def generate_stimuli(
                             "source_value": spec.source_value,
                             "target_value": spec.target_value,
                         },
-                        "degradation": {
-                            "id": spec.deg_id,
-                            "dimension": spec.deg_dimension,
-                            "magnitude": spec.deg_magnitude,
-                            "layer": spec.deg_layer,
-                            "params": spec.deg_params,
-                            "degraded_value": spec.degraded_value,
-                        },
+                        "degradation_dimension": spec.deg_dimension,
+                        "degradations": degraded_records,
                         "source_image": str(src_r.image_path.relative_to(output_dir)),
                         "ground_truth_image": str(gt_r.image_path.relative_to(output_dir)),
-                        "degraded_image": str(deg_r.image_path.relative_to(output_dir)),
+                        "degraded_images": degraded_images,
                     }
-                    errors = src_r.errors + gt_r.errors + deg_r.errors
-                    if errors:
-                        record["render_errors"] = errors
+                    if all_errors:
+                        record["render_errors"] = all_errors
 
                     f.write(json.dumps(record) + "\n")
                     print(f"  [{i}/{n}] OK: {spec.stimulus_id}")
@@ -422,22 +552,27 @@ def main():
     # Resolve layout list
     if args.layout:
         layouts = [get_layout(args.layout)]
-    elif args.difficulty:
-        layouts = get_layouts_by_difficulty(args.difficulty)
+        layouts = [lay for lay in layouts if args.edit_type in lay.supported_edits]
         if not layouts:
-            print(f"No layouts found with difficulty '{args.difficulty}'.")
+            print(
+                f"Layout '{args.layout}' does not support edit type '{args.edit_type}'. "
+                f"Check supported_edits in the layout definition."
+            )
+            sys.exit(1)
+    elif args.difficulty:
+        try:
+            layouts = get_layouts_for_edit_difficulty(args.edit_type, args.difficulty)
+        except KeyError as e:
+            print(f"No layout set defined for ('{args.edit_type}', '{args.difficulty}'). {e}")
             sys.exit(1)
     else:
-        layouts = get_layouts_for_edit(args.edit_type)
-
-    # Filter to those that support the edit type
-    layouts = [l for l in layouts if args.edit_type in l.supported_edits]
-    if not layouts:
-        print(
-            f"No layouts support edit type '{args.edit_type}'. "
-            "Check --layout / --difficulty or add supported_edits to the layout definition."
-        )
-        sys.exit(1)
+        layouts = get_layouts_for_edit_all_difficulties(args.edit_type)
+        if not layouts:
+            print(
+                f"No layout sets defined for edit type '{args.edit_type}'. "
+                "Add cells to LAYOUT_SETS in definitions.py or use --layout NAME directly."
+            )
+            sys.exit(1)
 
     # Load degradations
     with open(args.degradations) as f:
@@ -477,11 +612,12 @@ def main():
     if args.dry_run:
         print(f"\nDRY RUN — manifest ({len(specs)} stimuli):")
         for spec in specs:
+            magnitudes = ", ".join(d["magnitude"] for d in spec.degradations)
             print(
                 f"  {spec.stimulus_id}\n"
                 f"    {spec.layout_name}.{spec.target_role}  "
                 f"{spec.source_value} -> {spec.target_value}  |  "
-                f"degraded={spec.degraded_value}  [{spec.deg_magnitude}]"
+                f"degradations: [{magnitudes}]"
             )
         return
 

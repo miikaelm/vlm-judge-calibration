@@ -42,6 +42,7 @@ class RoleConstraints:
 class LayoutDefinition:
     """Complete description of a scene layout."""
     name: str
+    id: str                          # short identifier used in file names (e.g. "sh", "tch")
     difficulty: str                  # "easy" | "medium" | "hard" | "multi"
     roles: list[str]
     # Edit types this layout supports.
@@ -54,6 +55,11 @@ class LayoutDefinition:
     role_base_styles: dict[str, dict]
     # Default text content per role.
     default_content: dict[str, str]
+    # The single role that is edited in stimulus generation for this layout.
+    # Multi-role layouts still define all roles (they appear as context in the image),
+    # but only this role is the edit target. Each layout in a LAYOUT_SETS cell should
+    # cover a different kind of text element.
+    primary_role: str
     # CSS background value for the scene (e.g. "#FFFFFF", "linear-gradient(...)").
     background: str
     background_type: str             # "solid" | "gradient"
@@ -99,6 +105,64 @@ def all_layouts() -> list[LayoutDefinition]:
 
 
 # ---------------------------------------------------------------------------
+# Fixed layout sets
+# ---------------------------------------------------------------------------
+
+# Maps (edit_type, difficulty) -> list of layout names (1 or more).
+# Populated by definitions.py after all layouts are registered.
+LAYOUT_SETS: dict[tuple[str, str], list[str]] = {}
+
+
+def get_layouts_for_edit_difficulty(edit_type: str, difficulty: str) -> list[LayoutDefinition]:
+    """The layout set for a (edit_type, difficulty) cell from LAYOUT_SETS.
+
+    Raises KeyError if no cell is defined for this combination.
+    """
+    key = (edit_type, difficulty)
+    if key not in LAYOUT_SETS:
+        raise KeyError(
+            f"No layout set defined for {key!r}. "
+            f"Defined cells: {sorted(LAYOUT_SETS)}"
+        )
+    return [get_layout(name) for name in LAYOUT_SETS[key]]
+
+
+def get_layouts_for_edit_all_difficulties(edit_type: str) -> list[LayoutDefinition]:
+    """All layouts from LAYOUT_SETS cells for this edit type, deduplicated, registry-ordered."""
+    seen: set[str] = set()
+    result: list[LayoutDefinition] = []
+    for (et, _diff), names in LAYOUT_SETS.items():
+        if et != edit_type:
+            continue
+        for name in names:
+            if name not in seen:
+                seen.add(name)
+                result.append(get_layout(name))
+    return result
+
+
+def validate_layout_sets() -> None:
+    """Raise AssertionError if LAYOUT_SETS violates any invariant."""
+    errors: list[str] = []
+    for (edit_type, difficulty), names in LAYOUT_SETS.items():
+        cell = f"({edit_type!r}, {difficulty!r})"
+        if len(names) < 1:
+            errors.append(f"  {cell}: expected at least 1 layout, got 0")
+        for name in names:
+            if name not in _REGISTRY:
+                errors.append(f"  {cell}: layout {name!r} is not registered")
+                continue
+            layout = _REGISTRY[name]
+            if edit_type not in layout.supported_edits:
+                errors.append(
+                    f"  {cell}: layout {name!r} does not declare {edit_type!r} "
+                    f"in supported_edits (has {layout.supported_edits})"
+                )
+    if errors:
+        raise AssertionError("LAYOUT_SETS validation failed:\n" + "\n".join(errors))
+
+
+# ---------------------------------------------------------------------------
 # Shared HTML rendering helpers
 # ---------------------------------------------------------------------------
 
@@ -121,6 +185,9 @@ def _role_css(s: dict) -> str:
     lh = s.get("line_height")
     if lh is not None:
         parts.append(f"line-height:{lh}")
+    opacity = s.get("opacity")
+    if opacity is not None:
+        parts.append(f"opacity:{opacity}")
     rot = s.get("rotation_deg", 0.0)
     if rot:
         parts.append(f"transform:rotate({rot:.1f}deg)")
