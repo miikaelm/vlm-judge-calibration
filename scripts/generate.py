@@ -72,6 +72,44 @@ _SCALE_MULTIPLIERS = [1.3, 1.5, 2.0, 0.75, 0.6]
 # Rotation targets (degrees). Clamped to role's rotation_range at runtime.
 _ROTATION_TARGETS_DEG = [10, -10, 20, -20, 30, -30]
 
+# ---------------------------------------------------------------------------
+# Relocation helpers — 3 × 3 alignment position grid (Chebyshev + Manhattan)
+# ---------------------------------------------------------------------------
+
+_ALIGNMENT_GRID: dict[str, tuple[int, int]] = {
+    "top-left":      (0, 0), "top-center":    (0, 1), "top-right":    (0, 2),
+    "center-left":   (1, 0), "center":        (1, 1), "center-right": (1, 2),
+    "bottom-left":   (2, 0), "bottom-center": (2, 1), "bottom-right": (2, 2),
+}
+
+
+def _manhattan_distance(a: str, b: str) -> int:
+    r1, c1 = _ALIGNMENT_GRID[a]
+    r2, c2 = _ALIGNMENT_GRID[b]
+    return abs(r1 - r2) + abs(c1 - c2)
+
+
+# ---------------------------------------------------------------------------
+# Font-weight helpers
+# ---------------------------------------------------------------------------
+
+_FONT_WEIGHT_NORM: dict[str, int] = {"normal": 400, "bold": 700, "lighter": 300, "bolder": 800}
+_FONT_WEIGHT_TARGETS: list[int] = [100, 200, 300, 400, 500, 600, 700, 800, 900]
+
+
+def _normalize_weight(w) -> int:
+    if isinstance(w, int):
+        return w
+    return _FONT_WEIGHT_NORM.get(str(w).lower(), 400)
+
+
+# ---------------------------------------------------------------------------
+# Letter-spacing helpers
+# ---------------------------------------------------------------------------
+
+# Target letter-spacing values (px). Chosen to span a clear visible range.
+_LETTER_SPACING_TARGETS_PX: list[float] = [2, 5, 10, -2, -5]
+
 
 # ---------------------------------------------------------------------------
 # Color utilities — LAB shift for color_offset degradation
@@ -129,13 +167,25 @@ class StimulusSpec:
 # overrides without needing element IDs or HTML surgery.
 _SECONDARY_DIMS = ["scale_error", "rotation", "font_weight", "font_style", "letter_spacing", "opacity"]
 
-# How many secondary degradation configs to apply per stimulus.
+# How many unrelated degradation dimensions to sample per layout.
 _N_SECONDARY = 5
 
+# Dims where the param can be positive or negative — pick one direction per layout.
+_BIDIRECTIONAL_DIMS = {
+    "scale_error": "scale_error_pct",
+    "rotation": "angle_deg",
+    "letter_spacing": "letter_spacing_px",
+}
 
-def _build_secondary_pool(deg_configs: list[dict]) -> dict[str, list[dict]]:
-    """Return {dimension: [3 representative configs]} for style-dict-applicable dims."""
-    pool: dict[str, list[dict]] = {}
+
+def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
+    """Build per-dimension config lists, split by direction for bidirectional dims.
+
+    Returns {dim: {"positive": [...], "negative": [...]}} for bidirectional dims,
+    {dim: {"all": [...]}} for unidirectional dims.
+    Lists are sorted ascending by magnitude (smallest first).
+    """
+    result = {}
     for dim in _SECONDARY_DIMS:
         candidates = [
             d for d in deg_configs
@@ -143,13 +193,28 @@ def _build_secondary_pool(deg_configs: list[dict]) -> dict[str, list[dict]]:
         ]
         if not candidates:
             continue
-        n = len(candidates)
-        if n >= 3:
-            indices = [0, n // 2, n - 1]
-            pool[dim] = [candidates[i] for i in indices]
+        if dim in _BIDIRECTIONAL_DIMS:
+            param_key = _BIDIRECTIONAL_DIMS[dim]
+            pos_list = sorted(
+                [c for c in candidates if c["params"].get(param_key, 0) > 0],
+                key=lambda c: c["params"][param_key],
+            )
+            neg_list = sorted(
+                [c for c in candidates if c["params"].get(param_key, 0) < 0],
+                key=lambda c: -c["params"][param_key],  # ascending magnitude (−1 before −10)
+            )
+            result[dim] = {"positive": pos_list, "negative": neg_list}
         else:
-            pool[dim] = candidates
-    return pool
+            result[dim] = {"all": candidates}
+    return result
+
+
+def _pick_tiny_moderate_large(configs: list[dict]) -> list[dict]:
+    """Return [tiny, moderate, large] from a magnitude-sorted list."""
+    n = len(configs)
+    if n == 0:
+        return []
+    return [configs[0], configs[n // 2], configs[-1]]
 
 
 def _apply_secondary_degs_to_styles(
@@ -193,8 +258,8 @@ def _color_manifest(
         rng = random.Random(0)
 
     color_degs = [d for d in deg_configs if d["dimension"] == "color_offset"]
-    secondary_pool = _build_secondary_pool(deg_configs)
-    secondary_dims = list(secondary_pool.keys())
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = list(dim_configs.keys())
 
     specs = []
     for layout in layouts:
@@ -232,12 +297,24 @@ def _color_manifest(
         ))
 
         # 2. Unrelated specs: color is correct, one unrelated property is degraded per spec.
-        # Sample _N_SECONDARY dims; each dim becomes its own spec with 3 magnitude levels.
+        # Each layout independently samples dims and, for bidirectional dims, a direction.
         n_unrelated = min(_N_SECONDARY, len(secondary_dims))
         sampled_dims = rng.sample(secondary_dims, n_unrelated)
         for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                # Bidirectional: pick one direction per layout so all 3 levels go the same way.
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
             unrelated_degradations = []
-            for deg in secondary_pool[dim]:
+            for deg in three_levels:
                 unrelated_degradations.append({
                     "id": deg["id"],
                     "magnitude": deg["magnitude"],
@@ -266,6 +343,9 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
     if rng is None:
         rng = random.Random(0)
     scale_degs = [d for d in deg_configs if d["dimension"] == "scale_error"]
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = [d for d in dim_configs.keys() if d != "scale_error"]
+
     specs = []
     for layout in layouts:
         if "scale" not in layout.supported_edits:
@@ -275,6 +355,7 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
         multiplier = rng.choice(_SCALE_MULTIPLIERS)
         target_size = max(12, min(200, int(round(base_size * multiplier))))
 
+        # 1. Primary spec: scale_error only
         degradations = []
         for deg in scale_degs:
             error_pct = deg["params"]["scale_error_pct"]
@@ -299,6 +380,439 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
             deg_dimension="scale_error",
             degradations=degradations,
         ))
+
+        # 2. Unrelated specs: scale is correct, one unrelated property is degraded per spec.
+        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
+        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_size,  # scale is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"scale_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="scale",
+                target_role=role,
+                edit_property="font_size_px",
+                source_value=base_size,
+                target_value=target_size,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
+    return specs
+
+
+def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+    """Relocation: move text to a different alignment position.
+
+    Primary degradation: wrong alignment positions ordered by Manhattan distance from target.
+    Secondary degradations: unrelated property errors while position is correct.
+    """
+    import random
+    if rng is None:
+        rng = random.Random(0)
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = list(dim_configs.keys())  # alignment_error is not in _SECONDARY_DIMS
+
+    specs = []
+    for layout in layouts:
+        if "relocation" not in layout.supported_edits:
+            continue
+        role = layout.primary_role
+        rc = layout.role_constraints[role]
+        available_positions = rc.alignment_positions
+        if not available_positions:
+            continue
+
+        base_alignment = layout.role_base_styles[role].get("alignment", "center")
+        other_positions = [p for p in available_positions if p != base_alignment]
+        if not other_positions:
+            continue
+        target_alignment = rng.choice(other_positions)
+
+        # Wrong positions sorted by Manhattan distance from target (ascending = closest first).
+        # Use only positions that are in _ALIGNMENT_GRID so distance is computable.
+        wrong_candidates = sorted(
+            [p for p in available_positions if p != target_alignment and p in _ALIGNMENT_GRID and target_alignment in _ALIGNMENT_GRID],
+            key=lambda p: _manhattan_distance(target_alignment, p),
+        )
+        # Pick up to 3 spread levels (close / mid / far).
+        if len(wrong_candidates) >= 3:
+            n = len(wrong_candidates)
+            level_positions = [wrong_candidates[0], wrong_candidates[n // 2], wrong_candidates[-1]]
+            magnitudes = ["reloc_close", "reloc_medium", "reloc_far"]
+        elif len(wrong_candidates) == 2:
+            level_positions = [wrong_candidates[0], wrong_candidates[-1]]
+            magnitudes = ["reloc_close", "reloc_far"]
+        elif len(wrong_candidates) == 1:
+            level_positions = [wrong_candidates[0]]
+            magnitudes = ["reloc_far"]
+        else:
+            continue
+
+        primary_degs = []
+        for pos, mag in zip(level_positions, magnitudes):
+            primary_degs.append({
+                "id": f"alignment_error_{mag}",
+                "magnitude": mag,
+                "layer": "html",
+                "params": {"wrong_alignment": pos},
+                "degraded_value": pos,
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"relocation_{layout.id}_alignment_error",
+            layout_name=layout.name,
+            edit_type="relocation",
+            target_role=role,
+            edit_property="alignment",
+            source_value=base_alignment,
+            target_value=target_alignment,
+            deg_dimension="alignment_error",
+            degradations=primary_degs,
+        ))
+
+        # Unrelated specs: position is correct, one unrelated property is degraded.
+        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
+        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_alignment,  # position is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"relocation_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="relocation",
+                target_role=role,
+                edit_property="alignment",
+                source_value=base_alignment,
+                target_value=target_alignment,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
+    return specs
+
+
+def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+    """Font weight: change the weight value (100–900).
+
+    Primary degradation: wrong weight values sorted by distance from target.
+    Secondary degradations: unrelated property errors while weight is correct.
+    """
+    import random
+    if rng is None:
+        rng = random.Random(0)
+    fw_degs = [d for d in deg_configs if d["dimension"] == "font_weight"]
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = [d for d in dim_configs.keys() if d != "font_weight"]
+
+    specs = []
+    for layout in layouts:
+        if "font_weight" not in layout.supported_edits:
+            continue
+        role = layout.primary_role
+        base_weight_raw = layout.role_base_styles[role]["font_weight"]
+        base_weight = _normalize_weight(base_weight_raw)
+        available_targets = [w for w in _FONT_WEIGHT_TARGETS if w != base_weight]
+        target_weight = rng.choice(available_targets)
+
+        # Wrong weights: all fw configs except target, sorted by distance from target.
+        wrong_degs = sorted(
+            [d for d in fw_degs if d["params"]["font_weight"] != target_weight],
+            key=lambda d: abs(d["params"]["font_weight"] - target_weight),
+        )
+        three_levels = _pick_tiny_moderate_large(wrong_degs)
+        if not three_levels:
+            continue
+
+        primary_degs = []
+        for deg in three_levels:
+            primary_degs.append({
+                "id": deg["id"],
+                "magnitude": deg["magnitude"],
+                "layer": deg.get("layer", "html"),
+                "params": deg["params"],
+                "degraded_value": deg["params"]["font_weight"],
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"font_weight_{layout.id}_font_weight",
+            layout_name=layout.name,
+            edit_type="font_weight",
+            target_role=role,
+            edit_property="font_weight",
+            source_value=base_weight_raw,
+            target_value=target_weight,
+            deg_dimension="font_weight",
+            degradations=primary_degs,
+        ))
+
+        # Unrelated specs.
+        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
+        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_weight,  # weight is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"font_weight_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="font_weight",
+                target_role=role,
+                edit_property="font_weight",
+                source_value=base_weight_raw,
+                target_value=target_weight,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
+    return specs
+
+
+def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+    """Italic: flip font-style between normal and italic.
+
+    Primary degradation: wrong font-style values (oblique = visually close to italic, normal = clearly wrong).
+    Secondary degradations: unrelated property errors while font-style is correct.
+    """
+    import random
+    if rng is None:
+        rng = random.Random(0)
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = [d for d in dim_configs.keys() if d != "font_style"]
+
+    specs = []
+    for layout in layouts:
+        if "italic" not in layout.supported_edits:
+            continue
+        role = layout.primary_role
+        base_style = layout.role_base_styles[role].get("font_style", "normal")
+
+        # Target: flip the current style.
+        target_style = "italic" if base_style != "italic" else "normal"
+
+        # Wrong values ordered closest-to-farthest from target.
+        if target_style == "italic":
+            # oblique ≈ italic visually (subtle difference), normal is clearly wrong
+            wrong_styles = [("oblique", "style_oblique"), ("normal", "style_normal")]
+        else:
+            # flipping to normal: italic is close wrong, oblique is similar to italic
+            wrong_styles = [("oblique", "style_oblique"), ("italic", "style_italic")]
+
+        primary_degs = [
+            {
+                "id": f"italic_error_{style}",
+                "magnitude": mag,
+                "layer": "html",
+                "params": {"font_style": style},
+                "degraded_value": style,
+                "secondary_degs": [],
+            }
+            for style, mag in wrong_styles
+        ]
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"italic_{layout.id}_font_style",
+            layout_name=layout.name,
+            edit_type="italic",
+            target_role=role,
+            edit_property="font_style",
+            source_value=base_style,
+            target_value=target_style,
+            deg_dimension="font_style",
+            degradations=primary_degs,
+        ))
+
+        # Unrelated specs.
+        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
+        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_style,  # font-style is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"italic_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="italic",
+                target_role=role,
+                edit_property="font_style",
+                source_value=base_style,
+                target_value=target_style,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
+    return specs
+
+
+def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+    """Letter spacing: change tracking to a target px value.
+
+    Primary degradation: wrong letter-spacing values sorted by distance from target.
+    Secondary degradations: unrelated property errors while letter-spacing is correct.
+    """
+    import random
+    if rng is None:
+        rng = random.Random(0)
+    ls_degs = [d for d in deg_configs if d["dimension"] == "letter_spacing"]
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = [d for d in dim_configs.keys() if d != "letter_spacing"]
+
+    specs = []
+    for layout in layouts:
+        if "letter_spacing" not in layout.supported_edits:
+            continue
+        role = layout.primary_role
+        base_ls = layout.role_base_styles[role].get("letter_spacing", "normal")
+        target_px = rng.choice(_LETTER_SPACING_TARGETS_PX)
+        target_value = f"{target_px}px"
+
+        # Wrong letter-spacings: all ls configs except target, sorted by distance from target.
+        wrong_degs = sorted(
+            [d for d in ls_degs if d["params"]["letter_spacing_px"] != target_px],
+            key=lambda d: abs(d["params"]["letter_spacing_px"] - target_px),
+        )
+        three_levels = _pick_tiny_moderate_large(wrong_degs)
+        if not three_levels:
+            continue
+
+        primary_degs = []
+        for deg in three_levels:
+            wrong_px = deg["params"]["letter_spacing_px"]
+            primary_degs.append({
+                "id": deg["id"],
+                "magnitude": deg["magnitude"],
+                "layer": deg.get("layer", "html"),
+                "params": deg["params"],
+                "degraded_value": f"{wrong_px}px",
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"letter_spacing_{layout.id}_letter_spacing",
+            layout_name=layout.name,
+            edit_type="letter_spacing",
+            target_role=role,
+            edit_property="letter_spacing",
+            source_value=base_ls,
+            target_value=target_value,
+            deg_dimension="letter_spacing",
+            degradations=primary_degs,
+        ))
+
+        # Unrelated specs.
+        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
+        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_value,  # letter-spacing is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"letter_spacing_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="letter_spacing",
+                target_role=role,
+                edit_property="letter_spacing",
+                source_value=base_ls,
+                target_value=target_value,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
     return specs
 
 
@@ -344,9 +858,13 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
 
 
 _MANIFEST_BUILDERS = {
-    "color":    _color_manifest,
-    "scale":    _scale_manifest,
-    "rotation": _rotation_manifest,
+    "color":          _color_manifest,
+    "scale":          _scale_manifest,
+    "rotation":       _rotation_manifest,
+    "relocation":     _relocation_manifest,
+    "font_weight":    _font_weight_manifest,
+    "italic":         _italic_manifest,
+    "letter_spacing": _letter_spacing_manifest,
 }
 
 
@@ -497,10 +1015,17 @@ def generate_stimuli_sync(
 # ---------------------------------------------------------------------------
 
 def main():
+    all_edit_types = sorted(_MANIFEST_BUILDERS)
+
     parser = argparse.ArgumentParser(
         description="Generate calibration stimuli from the layout registry.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "Edit type selection:\n"
+            "  --edit-type all              All registered edit types\n"
+            "  --edit-type color scale      Specific types (space-separated)\n"
+            "  --edit-type color            Single type (original behaviour)\n"
+            "\n"
             "Layout selection (mutually exclusive):\n"
             "  --layout NAME      Single layout (e.g. solo_headline)\n"
             "  --difficulty TIER  All layouts at that difficulty (easy/medium/hard/multi)\n"
@@ -509,9 +1034,12 @@ def main():
     )
 
     parser.add_argument(
-        "--edit-type", default="color",
-        choices=sorted(_MANIFEST_BUILDERS),
-        help="Edit type to generate (default: color)",
+        "--edit-type", nargs="+", default=["color"],
+        metavar="TYPE",
+        help=(
+            f"Edit type(s) to generate. Use 'all' for every type. "
+            f"Available: {', '.join(all_edit_types)}. (default: color)"
+        ),
     )
 
     layout_group = parser.add_mutually_exclusive_group()
@@ -535,7 +1063,7 @@ def main():
     )
     parser.add_argument(
         "--count", type=int, default=None,
-        help="Maximum number of stimuli to generate (default: all combinations)",
+        help="Maximum number of stimuli per edit type (default: all combinations)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -549,69 +1077,94 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve layout list
-    if args.layout:
-        layouts = [get_layout(args.layout)]
-        layouts = [lay for lay in layouts if args.edit_type in lay.supported_edits]
-        if not layouts:
-            print(
-                f"Layout '{args.layout}' does not support edit type '{args.edit_type}'. "
-                f"Check supported_edits in the layout definition."
-            )
-            sys.exit(1)
-    elif args.difficulty:
-        try:
-            layouts = get_layouts_for_edit_difficulty(args.edit_type, args.difficulty)
-        except KeyError as e:
-            print(f"No layout set defined for ('{args.edit_type}', '{args.difficulty}'). {e}")
-            sys.exit(1)
+    # Resolve edit type list — "all" expands to every registered type.
+    if "all" in args.edit_type:
+        edit_types = all_edit_types
     else:
-        layouts = get_layouts_for_edit_all_difficulties(args.edit_type)
-        if not layouts:
-            print(
-                f"No layout sets defined for edit type '{args.edit_type}'. "
-                "Add cells to LAYOUT_SETS in definitions.py or use --layout NAME directly."
+        unknown = [t for t in args.edit_type if t not in _MANIFEST_BUILDERS]
+        if unknown:
+            parser.error(
+                f"Unknown edit type(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(all_edit_types)}"
             )
-            sys.exit(1)
+        edit_types = args.edit_type
 
-    # Load degradations
+    # Load degradations once.
     with open(args.degradations) as f:
         deg_data = yaml.safe_load(f)
     deg_configs = deg_data["degradations"]
 
-    # Build manifest
-    specs = build_manifest(
-        layouts=layouts,
-        edit_type=args.edit_type,
-        deg_configs=deg_configs,
-        count=args.count,
-        seed=args.seed,
-    )
+    # Build a manifest per edit type and collect all specs.
+    all_specs: list[StimulusSpec] = []
+    skipped_types: list[str] = []
 
-    if not specs:
-        print(
-            f"Manifest is empty. No degradation configs match edit type '{args.edit_type}'. "
-            "Check configs/degradations.yaml."
+    for edit_type in edit_types:
+        if args.layout:
+            layouts = [get_layout(args.layout)]
+            layouts = [lay for lay in layouts if edit_type in lay.supported_edits]
+            if not layouts:
+                print(
+                    f"[{edit_type}] Layout '{args.layout}' does not support this edit type — skipping."
+                )
+                skipped_types.append(edit_type)
+                continue
+        elif args.difficulty:
+            try:
+                layouts = get_layouts_for_edit_difficulty(edit_type, args.difficulty)
+            except KeyError:
+                print(
+                    f"[{edit_type}] No layout set defined for difficulty '{args.difficulty}' — skipping."
+                )
+                skipped_types.append(edit_type)
+                continue
+        else:
+            layouts = get_layouts_for_edit_all_difficulties(edit_type)
+            if not layouts:
+                print(
+                    f"[{edit_type}] No LAYOUT_SETS entries — skipping. "
+                    "Add cells to LAYOUT_SETS in definitions.py or use --layout NAME directly."
+                )
+                skipped_types.append(edit_type)
+                continue
+
+        specs = build_manifest(
+            layouts=layouts,
+            edit_type=edit_type,
+            deg_configs=deg_configs,
+            count=args.count,
+            seed=args.seed,
         )
+        if not specs:
+            print(f"[{edit_type}] Manifest is empty — skipping.")
+            skipped_types.append(edit_type)
+            continue
+
+        all_specs.extend(specs)
+
+    if not all_specs:
+        print("No stimuli to generate.")
         sys.exit(0)
 
-    # Summary header
-    layout_names = sorted({s.layout_name for s in specs})
-    roles = sorted({s.target_role for s in specs})
-    dim_counts: dict[str, int] = {}
-    for s in specs:
-        dim_counts[s.deg_dimension] = dim_counts.get(s.deg_dimension, 0) + 1
-
-    print(f"Edit type   : {args.edit_type}")
-    print(f"Layouts     : {', '.join(layout_names)} ({len(layout_names)} total)")
-    print(f"Roles       : {', '.join(roles)}")
-    print(f"Stimuli     : {len(specs)}")
-    for dim, cnt in sorted(dim_counts.items()):
-        print(f"  {dim}: {cnt}")
+    # Summary header — grouped by edit type.
+    print(f"\nEdit types  : {', '.join(edit_types)}")
+    if skipped_types:
+        print(f"Skipped     : {', '.join(skipped_types)}")
+    print(f"Total stimuli: {len(all_specs)}")
+    for edit_type in edit_types:
+        type_specs = [s for s in all_specs if s.edit_type == edit_type]
+        if not type_specs:
+            continue
+        layout_names = sorted({s.layout_name for s in type_specs})
+        dim_counts: dict[str, int] = {}
+        for s in type_specs:
+            dim_counts[s.deg_dimension] = dim_counts.get(s.deg_dimension, 0) + 1
+        print(f"\n  [{edit_type}]  {len(type_specs)} stimuli  |  layouts: {', '.join(layout_names)}")
+        for dim, cnt in sorted(dim_counts.items()):
+            print(f"    {dim}: {cnt}")
 
     if args.dry_run:
-        print(f"\nDRY RUN — manifest ({len(specs)} stimuli):")
-        for spec in specs:
+        print(f"\nDRY RUN — manifest ({len(all_specs)} stimuli):")
+        for spec in all_specs:
             magnitudes = ", ".join(d["magnitude"] for d in spec.degradations)
             print(
                 f"  {spec.stimulus_id}\n"
@@ -623,9 +1176,9 @@ def main():
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output      : {output_dir}\n")
+    print(f"\nOutput      : {output_dir}\n")
 
-    jsonl_path = generate_stimuli_sync(specs, output_dir)
+    jsonl_path = generate_stimuli_sync(all_specs, output_dir)
     print(f"JSONL       : {jsonl_path}")
 
 

@@ -365,31 +365,79 @@ degradations:
     notes: "45° counter-clockwise rotation"
 
   # ---------------------------------------------------------------------------
-  # FONT WEIGHT — 3 configs
+  # FONT WEIGHT — 9 configs (100–900 in steps of 100, lightest to heaviest)
   # ---------------------------------------------------------------------------
-  - id: font_weight_bold
+  - id: font_weight_100
     dimension: font_weight
-    magnitude: bold
+    magnitude: weight_100
     layer: html
     params:
-      font_weight: "bold"
-    notes: "Switch to bold (700)"
+      font_weight: 100
+    notes: "Thin (100)"
 
-  - id: font_weight_light
+  - id: font_weight_200
     dimension: font_weight
-    magnitude: light_300
+    magnitude: weight_200
+    layer: html
+    params:
+      font_weight: 200
+    notes: "Extra-light (200)"
+
+  - id: font_weight_300
+    dimension: font_weight
+    magnitude: weight_300
     layer: html
     params:
       font_weight: 300
-    notes: "Switch to light (300)"
+    notes: "Light (300)"
 
-  - id: font_weight_medium
+  - id: font_weight_400
     dimension: font_weight
-    magnitude: medium_500
+    magnitude: weight_400
+    layer: html
+    params:
+      font_weight: 400
+    notes: "Regular (400)"
+
+  - id: font_weight_500
+    dimension: font_weight
+    magnitude: weight_500
     layer: html
     params:
       font_weight: 500
-    notes: "Switch to medium (500)"
+    notes: "Medium (500)"
+
+  - id: font_weight_600
+    dimension: font_weight
+    magnitude: weight_600
+    layer: html
+    params:
+      font_weight: 600
+    notes: "Semi-bold (600)"
+
+  - id: font_weight_700
+    dimension: font_weight
+    magnitude: weight_700
+    layer: html
+    params:
+      font_weight: 700
+    notes: "Bold (700)"
+
+  - id: font_weight_800
+    dimension: font_weight
+    magnitude: weight_800
+    layer: html
+    params:
+      font_weight: 800
+    notes: "Extra-bold (800)"
+
+  - id: font_weight_900
+    dimension: font_weight
+    magnitude: weight_900
+    layer: html
+    params:
+      font_weight: 900
+    notes: "Black (900)"
 
   # ---------------------------------------------------------------------------
   # FONT STYLE — 2 configs
@@ -445,6 +493,14 @@ degradations:
       letter_spacing_px: 5
     notes: "+5px letter spacing"
 
+  - id: letter_spacing_pos_xlarge
+    dimension: letter_spacing
+    magnitude: pos_10px
+    layer: html
+    params:
+      letter_spacing_px: 10
+    notes: "+10px letter spacing"
+
   - id: letter_spacing_neg_tiny
     dimension: letter_spacing
     magnitude: neg_0_5px
@@ -477,9 +533,25 @@ degradations:
       letter_spacing_px: -5
     notes: "-5px letter spacing"
 
+  - id: letter_spacing_neg_xlarge
+    dimension: letter_spacing
+    magnitude: neg_10px
+    layer: html
+    params:
+      letter_spacing_px: -10
+    notes: "-10px letter spacing"
+
   # ---------------------------------------------------------------------------
-  # OPACITY — 4 configs
+  # OPACITY — 10 configs (0.95 → 0.30, fully unidirectional, less opaque)
   # ---------------------------------------------------------------------------
+  - id: opacity_95
+    dimension: opacity
+    magnitude: opacity_0_95
+    layer: html
+    params:
+      opacity: 0.95
+    notes: "5% transparent"
+
   - id: opacity_90
     dimension: opacity
     magnitude: opacity_0_9
@@ -487,6 +559,30 @@ degradations:
     params:
       opacity: 0.9
     notes: "10% transparent"
+
+  - id: opacity_85
+    dimension: opacity
+    magnitude: opacity_0_85
+    layer: html
+    params:
+      opacity: 0.85
+    notes: "15% transparent"
+
+  - id: opacity_80
+    dimension: opacity
+    magnitude: opacity_0_8
+    layer: html
+    params:
+      opacity: 0.8
+    notes: "20% transparent"
+
+  - id: opacity_75
+    dimension: opacity
+    magnitude: opacity_0_75
+    layer: html
+    params:
+      opacity: 0.75
+    notes: "25% transparent"
 
   - id: opacity_70
     dimension: opacity
@@ -496,6 +592,14 @@ degradations:
       opacity: 0.7
     notes: "30% transparent"
 
+  - id: opacity_60
+    dimension: opacity
+    magnitude: opacity_0_6
+    layer: html
+    params:
+      opacity: 0.6
+    notes: "40% transparent"
+
   - id: opacity_50
     dimension: opacity
     magnitude: opacity_0_5
@@ -503,6 +607,14 @@ degradations:
     params:
       opacity: 0.5
     notes: "50% transparent"
+
+  - id: opacity_40
+    dimension: opacity
+    magnitude: opacity_0_4
+    layer: html
+    params:
+      opacity: 0.4
+    notes: "60% transparent"
 
   - id: opacity_30
     dimension: opacity

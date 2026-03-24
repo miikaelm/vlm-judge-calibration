@@ -93,7 +93,7 @@ register(LayoutDefinition(
     id="sh",
     difficulty="easy",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation", "font_weight", "italic", "letter_spacing"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -160,7 +160,7 @@ register(LayoutDefinition(
     id="ts",
     difficulty="easy",
     roles=["title", "subtitle"],
-    supported_edits=["color", "scale"],
+    supported_edits=["color", "scale", "font_weight", "italic", "letter_spacing"],
     primary_role="subtitle",  # title-type edits covered by solo_headline; this tests secondary text
     role_constraints={
         "title":    RoleConstraints(color_editable=True, can_scale=True),
@@ -223,7 +223,7 @@ register(LayoutDefinition(
     id="hb",
     difficulty="easy",
     roles=["header", "body"],
-    supported_edits=["color", "scale"],
+    supported_edits=["color", "scale", "font_weight", "italic", "letter_spacing"],
     primary_role="body",  # tests body/paragraph text color, smaller and lower contrast than a headline
     role_constraints={
         "header": RoleConstraints(color_editable=True, can_scale=True),
@@ -292,7 +292,7 @@ register(LayoutDefinition(
     id="tb",
     difficulty="medium",
     roles=["title", "byline"],
-    supported_edits=["color", "scale", "rotation", "alignment"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation"],
     primary_role="byline",  # tests absolutely-positioned small text; title-type covered by other layouts
     role_constraints={
         "title":  RoleConstraints(
@@ -365,7 +365,7 @@ register(LayoutDefinition(
     id="nc",
     difficulty="medium",
     roles=["name", "job_title", "organization"],
-    supported_edits=["color", "scale"],
+    supported_edits=["color", "scale", "font_weight"],
     primary_role="name",
     role_constraints={
         "name":         RoleConstraints(color_editable=True, can_scale=True),
@@ -443,7 +443,7 @@ register(LayoutDefinition(
     id="qa",
     difficulty="medium",
     roles=["quote", "attribution"],
-    supported_edits=["color", "scale"],
+    supported_edits=["color", "scale", "italic"],
     primary_role="quote",
     role_constraints={
         "quote":       RoleConstraints(color_editable=True, can_scale=True),
@@ -661,7 +661,7 @@ register(LayoutDefinition(
     id="bc",
     difficulty="medium",
     roles=["banner", "caption"],
-    supported_edits=["color", "scale", "alignment"],
+    supported_edits=["color", "scale", "alignment", "letter_spacing"],
     primary_role="banner",
     role_constraints={
         "banner": RoleConstraints(color_editable=True, can_scale=True),
@@ -822,7 +822,7 @@ register(LayoutDefinition(
     id="gh",
     difficulty="easy",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -870,7 +870,7 @@ register(LayoutDefinition(
     id="ph",
     difficulty="easy",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -974,11 +974,26 @@ LAYOUT_SETS.update({
     # Color: 3 easy (solid / gradient / pattern bg) + 1 medium (image-like bg) = 4 total
     ("color", "easy"):   ["solo_headline", "gradient_headline", "pattern_headline"],
     ("color", "medium"): ["image_bg_headline"],
+
+    # Scale: 3 easy (simple single/two-role layouts) + 1 medium (multi-role with context)
     ("scale", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
     ("scale", "medium"): ["corner_badge",  "name_card",      "title_byline"],
-    # rotation × easy:   only solo_headline supports rotation in easy tier — needs 2 more
-    # rotation × medium: title_byline supports rotation, but needs 2 more medium rotation layouts
-    # alignment cells:   alignment edit type not yet wired into generate.py manifests
+
+    # Relocation (alignment position change): 3 easy (9-position grid) + 1 medium (3-position byline)
+    ("relocation", "easy"):   ["solo_headline", "gradient_headline", "pattern_headline"],
+    ("relocation", "medium"): ["title_byline"],
+
+    # Font weight (100–900 scale): 3 easy (simple layouts) + 1 medium (serif multi-role)
+    ("font_weight", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
+    ("font_weight", "medium"): ["name_card"],
+
+    # Italic (font-style normal ↔ italic): 3 easy + 1 medium (quote has italic baseline)
+    ("italic", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
+    ("italic", "medium"): ["quote_attribution"],
+
+    # Letter spacing (tracking in px): 3 easy + 1 medium (large banner makes tracking visible)
+    ("letter_spacing", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
+    ("letter_spacing", "medium"): ["banner_caption"],
 })
 
 validate_layout_sets()
