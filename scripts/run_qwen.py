@@ -78,6 +78,26 @@ def _load_prompt(prompts_path: Path, variant: str) -> dict:
         raise ValueError(f"Prompt variant '{variant}' not found in {prompts_path}")
 
 
+def _load_separated_prompts(prompts_path: Path) -> dict[str, dict]:
+    """Load per-dimension prompts for the separated evaluation strategy."""
+    with open(prompts_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    try:
+        return data["prompts"]["experiment_2_separated"]
+    except KeyError:
+        raise ValueError(f"'experiment_2_separated' prompts not found in {prompts_path}")
+
+
+# Ordered list of (result_field_name, short_label) for separated mode.
+_SEPARATED_DIMENSIONS = [
+    ("instruction_following", "IF"),
+    ("text_accuracy",         "TA"),
+    ("visual_consistency",    "VC"),
+    ("layout_preservation",   "LP"),
+    ("overall_quality",       "OQ"),
+]
+
+
 def _load_model(model_name_or_path: str, device: str, torch_dtype_str: str):
     import torch
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -138,17 +158,13 @@ def _run_inference(model, processor, messages: list[dict], max_new_tokens: int) 
 
 def _build_messages(
     prompt: dict,
-    variant: str,
     instruction: str,
     img1: Image.Image,
     img2: Image.Image,
 ) -> list[dict]:
     """Build Qwen-format messages for a stimulus."""
     system_text = prompt["system"].strip()
-    if variant == "experiment_2":
-        user_text = prompt["user_template"].replace("{instruction}", instruction)
-    else:
-        user_text = prompt["user_template"]
+    user_text = prompt["user_template"].replace("{instruction}", instruction)
 
     return [
         {"role": "system", "content": system_text},
@@ -161,6 +177,65 @@ def _build_messages(
             ],
         },
     ]
+
+
+def _run_separated_inference(
+    model,
+    processor,
+    separated_prompts: dict[str, dict],
+    instruction: str,
+    img1: Image.Image,
+    img2: Image.Image,
+    max_new_tokens: int,
+) -> tuple[dict, int, int, bool]:
+    """Run one inference call per dimension and aggregate into a combined-format dict.
+
+    Returns (aggregated_dict, total_prompt_tokens, total_completion_tokens, all_ok).
+    The aggregated_dict has the same keys as a combined exp2 response, with the
+    rationale from each dimension concatenated into 'errors_noticed'.
+    """
+    scores: dict = {}
+    rationales: list[str] = []
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    all_ok = True
+
+    for field_name, abbr in _SEPARATED_DIMENSIONS:
+        dim_prompt = separated_prompts[field_name]
+        messages = _build_messages(dim_prompt, instruction, img1, img2)
+
+        try:
+            raw, pt, ct = _run_inference(model, processor, messages, max_new_tokens)
+        except Exception as e:
+            print(f"\n    [{abbr}] INFERENCE ERROR: {e}", end="")
+            scores[field_name] = None
+            rationales.append(f"{abbr}: [inference error]")
+            all_ok = False
+            continue
+
+        total_prompt_tokens += pt
+        total_completion_tokens += ct
+
+        parsed = parse_response(raw)
+        if parsed is not None and "score" in parsed:
+            scores[field_name] = parsed["score"]
+            rat = str(parsed.get("rationale", "")).strip()
+            if rat:
+                rationales.append(f"{abbr}: {rat}")
+        else:
+            scores[field_name] = None
+            rationales.append(f"{abbr}: [parse error]")
+            all_ok = False
+
+    aggregated = {
+        "instruction_following": scores.get("instruction_following"),
+        "text_accuracy":         scores.get("text_accuracy"),
+        "visual_consistency":    scores.get("visual_consistency"),
+        "layout_preservation":   scores.get("layout_preservation"),
+        "overall_quality":       scores.get("overall_quality"),
+        "errors_noticed":        " | ".join(rationales),
+    }
+    return aggregated, total_prompt_tokens, total_completion_tokens, all_ok
 
 
 def _clamp_score(val) -> int | None:
@@ -228,10 +303,18 @@ def _process_stimuli(
     records: list[dict],
     model_name_or_path: str,
     max_new_tokens: int,
+    prompt_strategy: str = "combined",
 ) -> None:
     """Run inference for all manifest records under one variant and append to output_path."""
     prompts_path = Path(__file__).parent.parent / "configs" / "vlm_prompts.yaml"
-    prompt = _load_prompt(prompts_path, variant)
+
+    use_separated = (prompt_strategy == "separated" and variant == "experiment_2")
+    if use_separated:
+        separated_prompts = _load_separated_prompts(prompts_path)
+        prompt = None
+    else:
+        prompt = _load_prompt(prompts_path, variant)
+        separated_prompts = None
 
     n = len(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,7 +324,7 @@ def _process_stimuli(
         stimulus_id = record["id"]
         instruction = record.get("edit_instruction", "")
 
-        print(f"[run_qwen] [{i}/{n}] {stimulus_id} ({variant}) ...", end=" ", flush=True)
+        print(f"[run_qwen] [{i}/{n}] {stimulus_id} ({variant}, {prompt_strategy}) ...", end=" ", flush=True)
 
         if variant == "experiment_2":
             img1 = Image.open(manifest_dir / record["source_image"]).convert("RGB")
@@ -250,35 +333,53 @@ def _process_stimuli(
             img1 = Image.open(manifest_dir / record["ground_truth_image"]).convert("RGB")
             img2 = Image.open(manifest_dir / record["degraded_image"]).convert("RGB")
 
-        messages = _build_messages(prompt, variant, instruction, img1, img2)
-
-        try:
-            raw_response, prompt_tokens, completion_tokens = _run_inference(
-                model, processor, messages, max_new_tokens
+        if use_separated:
+            assert separated_prompts is not None
+            aggregated, prompt_tokens, completion_tokens, all_ok = _run_separated_inference(
+                model, processor, separated_prompts, instruction, img1, img2, max_new_tokens,
             )
-        except Exception as e:
-            print(f"INFERENCE ERROR: {e}")
-            n_fail += 1
-            continue
-
-        parsed = parse_response(raw_response)
-
-        if parsed is not None:
-            print("ok")
-            n_ok += 1
+            if all_ok:
+                print("ok")
+                n_ok += 1
+            else:
+                print("PARTIAL FAIL")
+                n_fail += 1
+            result_record = _build_result_record(
+                stimulus_id, model_name_or_path, variant,
+                aggregated, "", prompt_tokens, completion_tokens,
+            )
+            result_record["parse_success"] = all_ok
         else:
-            print("PARSE FAIL")
-            n_fail += 1
-            log_parse_failure(raw_response, stimulus_id, parse_failures_path)
+            assert prompt is not None
+            messages = _build_messages(prompt, instruction, img1, img2)
+            try:
+                raw_response, prompt_tokens, completion_tokens = _run_inference(
+                    model, processor, messages, max_new_tokens
+                )
+            except Exception as e:
+                print(f"INFERENCE ERROR: {e}")
+                n_fail += 1
+                continue
 
-        result_record = _build_result_record(
-            stimulus_id, model_name_or_path, variant,
-            parsed, raw_response, prompt_tokens, completion_tokens,
-        )
+            parsed = parse_response(raw_response)
+
+            if parsed is not None:
+                print("ok")
+                n_ok += 1
+            else:
+                print("PARSE FAIL")
+                n_fail += 1
+                log_parse_failure(raw_response, stimulus_id, parse_failures_path)
+
+            result_record = _build_result_record(
+                stimulus_id, model_name_or_path, variant,
+                parsed, raw_response, prompt_tokens, completion_tokens,
+            )
+
         with open(output_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(result_record) + "\n")
 
-    print(f"\n[run_qwen] {variant}: {n_ok} succeeded, {n_fail} failed.")
+    print(f"\n[run_qwen] {variant} ({prompt_strategy}): {n_ok} succeeded, {n_fail} failed.")
     print(f"[run_qwen] Results -> {output_path}")
 
 
@@ -293,21 +394,23 @@ def run(
     device: str,
     torch_dtype: str,
     max_new_tokens: int,
+    prompt_strategy: str = "combined",
 ) -> None:
     records = _load_manifest(manifest_dir)
     if limit is not None:
         records = records[:limit]
     n = len(records)
-    print(f"[run_qwen] {n} records | variants={variants} | model={model_name_or_path}")
+    print(f"[run_qwen] {n} records | variants={variants} | model={model_name_or_path} | strategy={prompt_strategy}")
 
     model, processor = _load_model(model_name_or_path, device, torch_dtype)
 
     for variant, output_path, parse_failures_path in zip(variants, output_paths, parse_failures_paths):
-        print(f"\n[run_qwen] === Running {variant} ===")
+        print(f"\n[run_qwen] === Running {variant} ({prompt_strategy}) ===")
         _process_stimuli(
             model, processor, manifest_dir, variant,
             output_path, parse_failures_path, records,
             model_name_or_path, max_new_tokens,
+            prompt_strategy=prompt_strategy,
         )
 
 
@@ -331,6 +434,14 @@ def main() -> None:
                         choices=["bfloat16", "float16", "float32"],
                         help="Model dtype (bfloat16 recommended for MI250X)")
     parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument(
+        "--prompt-strategy", choices=["combined", "separated"], default="combined",
+        help=(
+            "combined (default): single query per stimulus for all dimensions. "
+            "separated: one query per dimension (exp2 only); rationales are aggregated "
+            "into the errors_noticed field so the output format is identical."
+        ),
+    )
     args = parser.parse_args()
 
     if args.experiment == "both":
@@ -354,6 +465,7 @@ def main() -> None:
         device=args.device,
         torch_dtype=args.dtype,
         max_new_tokens=args.max_new_tokens,
+        prompt_strategy=args.prompt_strategy,
     )
 
 

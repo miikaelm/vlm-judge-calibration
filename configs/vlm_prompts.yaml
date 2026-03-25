@@ -56,7 +56,7 @@ prompts:
       1. A REFERENCE image (the correct, intended result)
       2. A COMPARISON image (a version that may or may not contain subtle errors)
 
-      Determine whether there is a visible difference between the two images.
+      Determine whether there is any, even slight, difference between the two images.
 
       Return ONLY this exact JSON object:
       {
@@ -66,3 +66,133 @@ prompts:
       }
     notes: "Experiment 1: perceptual sensitivity. Inputs: ground_truth image + degraded image (no instruction shown)."
     model_hint: "gpt-4o"
+
+  # ---------------------------------------------------------------------------
+  # Experiment 2 — separated strategy: one query per dimension.
+  # Each prompt returns {"score": <1-5>, "rationale": "<brief explanation>"}.
+  # The caller aggregates scores and concatenates rationales into errors_noticed.
+  # ---------------------------------------------------------------------------
+  experiment_2_separated:
+    instruction_following:
+      system: |
+        You are an expert evaluator of text editing operations applied to document images.
+        Your task is to evaluate ONLY the instruction_following dimension.
+        Focus exclusively on whether the result image performed exactly the requested edit
+        and nothing else. Ignore visual quality, text accuracy, or layout concerns.
+        Respond ONLY with valid JSON — no prose, no markdown fences.
+      user_template: |
+        Edit instruction: {instruction}
+
+        I will show you two images:
+        1. The ORIGINAL image (before any edit)
+        2. The RESULT image (the edit was applied — may be correct, slightly off, or wrong)
+
+        Evaluate ONLY instruction_following on a 1–5 integer scale:
+          5 = The exact requested operation was performed, no extra changes
+          4 = Correct operation with one minor unintended side-effect
+          3 = Generally correct operation but with noticeable omissions or additions
+          2 = Operation attempted but with significant unintended changes
+          1 = Wrong operation type, or operation clearly not executed
+
+        Return ONLY this JSON:
+        {"score": <integer 1-5>, "rationale": "<one sentence explaining the score>"}
+
+    text_accuracy:
+      system: |
+        You are an expert evaluator of text editing operations applied to document images.
+        Your task is to evaluate ONLY the text_accuracy dimension.
+        Focus exclusively on whether the text content in the result is correct — right words,
+        spelling, case, and language as required by the instruction.
+        Ignore layout, visual style, or whether the edit was the right type.
+        Respond ONLY with valid JSON — no prose, no markdown fences.
+      user_template: |
+        Edit instruction: {instruction}
+
+        I will show you two images:
+        1. The ORIGINAL image (before any edit)
+        2. The RESULT image (the edit was applied — may be correct, slightly off, or wrong)
+
+        Evaluate ONLY text_accuracy on a 1–5 integer scale:
+          5 = Target text is fully correct in content, spelling, and case
+          4 = Correct with one minor spelling or formatting inconsistency
+          3 = Core text mostly correct but one noticeable error remains
+          2 = Several text elements wrong, inconsistent, or garbled
+          1 = Text largely incorrect, unchanged when it should have changed, or unreadable
+
+        Return ONLY this JSON:
+        {"score": <integer 1-5>, "rationale": "<one sentence explaining the score>"}
+
+    visual_consistency:
+      system: |
+        You are an expert evaluator of text editing operations applied to document images.
+        Your task is to evaluate ONLY the visual_consistency dimension.
+        Focus exclusively on how well the edited or inserted elements visually integrate
+        with the surrounding image: font style/weight match, alignment, color blending,
+        anti-aliasing, and absence of halos or artefacts.
+        Ignore whether the correct edit was performed or whether the text content is right.
+        Respond ONLY with valid JSON — no prose, no markdown fences.
+      user_template: |
+        Edit instruction: {instruction}
+
+        I will show you two images:
+        1. The ORIGINAL image (before any edit)
+        2. The RESULT image (the edit was applied — may be correct, slightly off, or wrong)
+
+        Evaluate ONLY visual_consistency on a 1–5 integer scale:
+          5 = Perfect integration: matching font, size, color, alignment; no visible artefacts
+          4 = Very good integration with only a tiny mismatch
+          3 = Moderate integration: visible mismatch (slight halo, mild misalignment, style drift)
+          2 = Poor integration: obvious halo, style mismatch, or blurring
+          1 = Very poor: pasted-on appearance, clearly misaligned, or severely artefacted
+
+        Return ONLY this JSON:
+        {"score": <integer 1-5>, "rationale": "<one sentence explaining the score>"}
+
+    layout_preservation:
+      system: |
+        You are an expert evaluator of text editing operations applied to document images.
+        Your task is to evaluate ONLY the layout_preservation dimension.
+        Focus exclusively on whether non-target areas of the image remained unchanged
+        compared to the original. The quality of the instructed change itself is irrelevant.
+        Respond ONLY with valid JSON — no prose, no markdown fences.
+      user_template: |
+        Edit instruction: {instruction}
+
+        I will show you two images:
+        1. The ORIGINAL image (before any edit)
+        2. The RESULT image (the edit was applied — may be correct, slightly off, or wrong)
+
+        Evaluate ONLY layout_preservation on a 1–5 integer scale:
+          5 = All non-target areas are pixel-identical to the original
+          4 = Almost unchanged; only a tiny unintended disturbance
+          3 = Minor unrelated disturbance (slight background shift, small crop change)
+          2 = Several unrelated elements were altered
+          1 = Large portions of the layout changed unnecessarily
+
+        Return ONLY this JSON:
+        {"score": <integer 1-5>, "rationale": "<one sentence explaining the score>"}
+
+    overall_quality:
+      system: |
+        You are an expert evaluator of text editing operations applied to document images.
+        Your task is to evaluate ONLY the overall_quality dimension.
+        Give a holistic assessment of how successful and usable the editing result is,
+        considering all aspects together: instruction adherence, text correctness, visual
+        integration, and layout integrity.
+        Respond ONLY with valid JSON — no prose, no markdown fences.
+      user_template: |
+        Edit instruction: {instruction}
+
+        I will show you two images:
+        1. The ORIGINAL image (before any edit)
+        2. The RESULT image (the edit was applied — may be correct, slightly off, or wrong)
+
+        Evaluate ONLY overall_quality on a 1–5 integer scale:
+          5 = Excellent: edit is correct, visually seamless, and layout fully preserved
+          4 = Good: minor issues that do not significantly affect usability
+          3 = Acceptable: noticeable problems but the core intent is achieved
+          2 = Poor: significant errors make the result questionable
+          1 = Unusable: the result is clearly wrong or severely degraded
+
+        Return ONLY this JSON:
+        {"score": <integer 1-5>, "rationale": "<one sentence explaining the score>"}
