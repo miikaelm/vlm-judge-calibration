@@ -10,6 +10,7 @@ Public API:
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -158,11 +159,25 @@ def load_results(
     # -- Load metadata index
     meta: dict[str, dict] = {}
     if manifest_dir.exists():
-        for d in manifest_dir.iterdir():
-            mpath = d / "metadata.json"
-            if d.is_dir() and mpath.exists():
-                m = json.loads(mpath.read_text(encoding="utf-8"))
-                meta[m["stimulus_id"]] = m
+        manifest_file = manifest_dir / "manifest.jsonl"
+        if manifest_file.exists():
+            with open(manifest_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            m = json.loads(line)
+                            key = m.get("stimulus_id") or m.get("id", "")
+                            if key:
+                                meta[key] = m
+                        except json.JSONDecodeError:
+                            pass
+        else:
+            for d in manifest_dir.iterdir():
+                mpath = d / "metadata.json"
+                if d.is_dir() and mpath.exists():
+                    m = json.loads(mpath.read_text(encoding="utf-8"))
+                    meta[m["stimulus_id"]] = m
 
     # -- Join
     rows = []
@@ -296,41 +311,186 @@ def plot_sensitivity_curve(
 
 
 # ---------------------------------------------------------------------------
-# Plot: Exp1 vs Exp2 gap
+# Helpers for the Exp-gap example panels
 # ---------------------------------------------------------------------------
 
-def plot_exp_gap(
+def _load_manifest_index(manifest_dir: Path) -> dict:
+    """Load manifest.jsonl into a dict keyed by stimulus id."""
+    manifest_file = manifest_dir / "manifest.jsonl"
+    if not manifest_file.exists():
+        return {}
+    index: dict = {}
+    with open(manifest_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                m = json.loads(line)
+                key = m.get("stimulus_id") or m.get("id", "")
+                if key:
+                    index[key] = m
+            except json.JSONDecodeError:
+                pass
+    return index
+
+
+def _pick_example_stimuli(
     df: pd.DataFrame,
     dimension: str,
-    *,
-    vlm: str | None = None,
-    exp2_score: str = "overall_quality",
-    figsize: tuple[float, float] = (8, 5),
-) -> plt.Figure:
-    """Plot Exp1 vs Exp2 scores for the same stimuli, grouped by magnitude.
+    vlm: str | None,
+    manifest_index: dict,
+    n: int = 3,
+) -> list:
+    """Pick n stimuli at low / medium / high magnitude for the given dimension.
 
-    Exp1 uses ``similarity_score`` (higher = more similar).
-    Exp2 uses ``overall_quality`` (or ``exp2_score``).
-
-    The gap between the curves quantifies how much harder judging is vs
-    simply detecting a difference.
+    Returns a list of dicts with keys:
+        stimulus_id, magnitude_label, numeric_magnitude,
+        instruction, source_image, ground_truth_image, degraded_image,
+        exp1 (dict), exp2 (dict)
     """
-    filt = (df["degradation_dimension"] == dimension) & df["parse_success"]
+    filt = df["degradation_dimension"] == dimension
     if vlm is not None:
         filt &= df["model"] == vlm
 
-    exp1 = df[filt & (df["experiment"] == "experiment_1") & df["similarity_score"].notna()].copy()
-    exp2 = df[filt & (df["experiment"] == "experiment_2") & df[exp2_score].notna()].copy()
+    sub_e1 = df[filt & (df["experiment"] == "experiment_1")].copy()
+    sub_e2 = df[filt & (df["experiment"] == "experiment_2")].copy()
 
-    if exp1.empty and exp2.empty:
-        fig, ax = plt.subplots(figsize=figsize)
-        ax.text(0.5, 0.5, f"No data for dimension={dimension!r}",
-                ha="center", va="center", transform=ax.transAxes)
-        ax.set_title(f"Exp1 vs Exp2 gap — {dimension}")
-        return fig
+    all_sids = set(sub_e1["stimulus_id"]).union(sub_e2["stimulus_id"])
+    sids_with_meta = {sid for sid in all_sids if sid in manifest_index}
+    if not sids_with_meta:
+        return []
 
-    fig, ax = plt.subplots(figsize=figsize)
+    # Build magnitude map — prefer exp2 row, fall back to exp1
+    mag_map: dict = {}
+    for sid in sids_with_meta:
+        row = sub_e2[sub_e2["stimulus_id"] == sid]
+        if row.empty:
+            row = sub_e1[sub_e1["stimulus_id"] == sid]
+        if not row.empty:
+            mag_map[sid] = float(row["numeric_magnitude"].iloc[0])
 
+    if not mag_map:
+        return []
+
+    sids_sorted = sorted(mag_map, key=lambda s: mag_map[s])
+    total = len(sids_sorted)
+    if total == 1:
+        pick_indices = [0]
+    elif total == 2:
+        pick_indices = [0, total - 1]
+    else:
+        pick_indices = [0, total // 2, total - 1]
+
+    mag_labels = ["low", "medium", "high"]
+    results = []
+    for label, idx in zip(mag_labels, pick_indices[:n]):
+        sid = sids_sorted[idx]
+        m = manifest_index[sid]
+
+        e1_rows = sub_e1[sub_e1["stimulus_id"] == sid]
+        e1: dict = {}
+        if not e1_rows.empty:
+            r = e1_rows.iloc[0]
+            e1 = {
+                "similarity_score": r.get("similarity_score"),
+                "detected_difference": r.get("detected_difference"),
+                "description": r.get("exp1_description") or "",
+            }
+
+        e2_rows = sub_e2[sub_e2["stimulus_id"] == sid]
+        e2: dict = {}
+        if not e2_rows.empty:
+            r = e2_rows.iloc[0]
+            e2 = {
+                "instruction_following": r.get("instruction_following"),
+                "text_accuracy": r.get("text_accuracy"),
+                "visual_consistency": r.get("visual_consistency"),
+                "layout_preservation": r.get("layout_preservation"),
+                "overall_quality": r.get("overall_quality"),
+                "errors_noticed": r.get("errors_noticed") or "",
+            }
+
+        results.append({
+            "stimulus_id": sid,
+            "magnitude_label": label,
+            "numeric_magnitude": mag_map[sid],
+            "instruction": m.get("edit_instruction", ""),
+            "source_image": m.get("source_image", ""),
+            "ground_truth_image": m.get("ground_truth_image", ""),
+            "degraded_image": m.get("degraded_image", ""),
+            "exp1": e1,
+            "exp2": e2,
+        })
+    return results
+
+
+def _format_example_text(ex: dict) -> str:
+    """Format scores + instruction as a compact monospace text block."""
+    lines = []
+
+    instr = ex.get("instruction", "")
+    lines.append("INSTRUCTION:")
+    for chunk in textwrap.wrap(instr, width=42) or ["(none)"]:
+        lines.append(f"  {chunk}")
+    lines.append("")
+
+    e1 = ex.get("exp1", {})
+    lines.append("EXP 1  (perceptual sensitivity):")
+    if e1:
+        sim = e1.get("similarity_score")
+        det = e1.get("detected_difference")
+        lines.append(f"  Similarity     : {'—' if sim is None else f'{sim}/5'}")
+        if det is None:
+            det_str = "—"
+        else:
+            det_str = "Yes" if det else "No"
+        lines.append(f"  Detected diff. : {det_str}")
+        desc = str(e1.get("description") or "")
+        if desc.strip():
+            lines.append("  Comment:")
+            for chunk in textwrap.wrap(desc, width=40):
+                lines.append(f"    {chunk}")
+    else:
+        lines.append("  (no data)")
+    lines.append("")
+
+    e2 = ex.get("exp2", {})
+    lines.append("EXP 2  (instruction-following):")
+    if e2:
+        for key, label in [
+            ("instruction_following", "Instr. following"),
+            ("text_accuracy",         "Text accuracy   "),
+            ("visual_consistency",    "Visual consist. "),
+            ("layout_preservation",   "Layout preserv. "),
+            ("overall_quality",       "Overall quality "),
+        ]:
+            val = e2.get(key)
+            score_str = f"{val}/5" if val is not None else "—"
+            lines.append(f"  {label}: {score_str}")
+        errors = str(e2.get("errors_noticed") or "")
+        lines.append("")
+        lines.append("  COMMENTS:")
+        if errors.strip():
+            for chunk in textwrap.wrap(errors, width=40):
+                lines.append(f"    {chunk}")
+        else:
+            lines.append("    (none)")
+    else:
+        lines.append("  (no data)")
+
+    return "\n".join(lines)
+
+
+def _draw_gap_curve(
+    ax: plt.Axes,
+    exp1: pd.DataFrame,
+    exp2: pd.DataFrame,
+    exp2_score: str,
+    dimension: str,
+    vlm: str | None,
+) -> None:
+    """Draw the Exp1 vs Exp2 gap curve onto an existing Axes."""
     def _plot_series(data: pd.DataFrame, score_col: str, label: str, color: str, marker: str):
         if data.empty:
             return
@@ -349,7 +509,6 @@ def plot_exp_gap(
     _plot_series(exp1, "similarity_score", "Exp1: similarity score", "#2196F3", "o")
     _plot_series(exp2, exp2_score, f"Exp2: {exp2_score.replace('_', ' ')}", "#FF5722", "s")
 
-    # Shade the gap between curves where both exist
     mags_1 = set(exp1["numeric_magnitude"].unique())
     mags_2 = set(exp2["numeric_magnitude"].unique())
     shared_mags = sorted(mags_1 & mags_2)
@@ -383,5 +542,158 @@ def plot_exp_gap(
     ax.axhline(4.0, color="red", linestyle=":", linewidth=1, alpha=0.6, label="threshold")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
+
+
+def _add_example_panels(
+    fig: plt.Figure,
+    outer_gs,
+    examples: list,
+    manifest_dir: Path,
+    start_row: int = 1,
+) -> None:
+    """Render example stimulus panels (images + scores) into outer_gs rows."""
+    from matplotlib.image import imread as mpl_imread
+
+    for i, ex in enumerate(examples):
+        row_spec = outer_gs[start_row + i]
+        inner_gs = row_spec.subgridspec(2, 1, height_ratios=[1, 9], hspace=0.1)
+
+        # Header bar
+        ax_hdr = fig.add_subplot(inner_gs[0])
+        ax_hdr.axis("off")
+        mag_val = ex["numeric_magnitude"]
+        mag_str = f"{mag_val:.3g}" if mag_val != int(mag_val) else str(int(mag_val))
+        ax_hdr.text(
+            0.0, 0.5,
+            f"  ▶  {ex['magnitude_label'].upper()} degradation  "
+            f"│  stimulus: {ex['stimulus_id']}  │  magnitude = {mag_str}",
+            transform=ax_hdr.transAxes, fontsize=8.5, fontweight="bold",
+            va="center", color="#222222",
+            bbox=dict(facecolor="#e8e8e8", edgecolor="none", boxstyle="square,pad=0.3"),
+        )
+
+        # Content: 3 images + score panel
+        content_gs = inner_gs[1].subgridspec(1, 4, wspace=0.05, width_ratios=[1, 1, 1, 1.8])
+
+        for j, (img_key, img_title) in enumerate([
+            ("source_image",       "Source"),
+            ("ground_truth_image", "Ground Truth"),
+            ("degraded_image",     "Degraded"),
+        ]):
+            ax_img = fig.add_subplot(content_gs[j])
+            img_rel = ex.get(img_key, "")
+            loaded = False
+            if img_rel:
+                img_path = manifest_dir / img_rel
+                if img_path.exists():
+                    try:
+                        img = mpl_imread(str(img_path))
+                        ax_img.imshow(img)
+                        loaded = True
+                    except Exception:
+                        pass
+            if not loaded:
+                ax_img.set_facecolor("#eeeeee")
+                ax_img.text(0.5, 0.5, "Image\nnot found", ha="center", va="center",
+                            transform=ax_img.transAxes, fontsize=7, color="#888888")
+            ax_img.set_title(img_title, fontsize=8, pad=2)
+            ax_img.axis("off")
+
+        # Score / instruction text panel
+        ax_txt = fig.add_subplot(content_gs[3])
+        ax_txt.axis("off")
+        ax_txt.text(
+            0.04, 0.97,
+            _format_example_text(ex),
+            transform=ax_txt.transAxes,
+            fontsize=6.5, va="top", ha="left",
+            family="monospace",
+            bbox=dict(
+                facecolor="#f8f8f8", edgecolor="#cccccc",
+                boxstyle="round,pad=0.5", linewidth=0.7,
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plot: Exp1 vs Exp2 gap
+# ---------------------------------------------------------------------------
+
+def plot_exp_gap(
+    df: pd.DataFrame,
+    dimension: str,
+    *,
+    vlm: str | None = None,
+    exp2_score: str = "overall_quality",
+    figsize: tuple[float, float] = (8, 5),
+    manifest_dir: Path | None = None,
+    n_examples: int = 3,
+) -> plt.Figure:
+    """Plot Exp1 vs Exp2 scores for the same stimuli, grouped by magnitude.
+
+    Exp1 uses ``similarity_score`` (higher = more similar).
+    Exp2 uses ``overall_quality`` (or ``exp2_score``).
+
+    The gap between the curves quantifies how much harder judging is vs
+    simply detecting a difference.
+
+    When ``manifest_dir`` is given, three example stimuli (low / medium /
+    high magnitude) are appended below the curve, each showing the source,
+    ground-truth, and degraded images alongside the Exp1 and Exp2 scores
+    and the model's written comments.
+    """
+    from matplotlib import gridspec as mgridspec
+
+    filt = (df["degradation_dimension"] == dimension) & df["parse_success"]
+    if vlm is not None:
+        filt &= df["model"] == vlm
+
+    exp1 = df[filt & (df["experiment"] == "experiment_1") & df["similarity_score"].notna()].copy()
+    exp2 = df[filt & (df["experiment"] == "experiment_2") & df[exp2_score].notna()].copy()
+
+    # Load examples when manifest directory is available
+    examples: list = []
+    if manifest_dir is not None:
+        manifest_dir = Path(manifest_dir)
+        manifest_index = _load_manifest_index(manifest_dir)
+        examples = _pick_example_stimuli(df, dimension, vlm, manifest_index, n=n_examples)
+
+    no_data = exp1.empty and exp2.empty
+
+    if not examples:
+        # Simple figure — original behaviour
+        fig, ax = plt.subplots(figsize=figsize)
+        if no_data:
+            ax.text(0.5, 0.5, f"No data for dimension={dimension!r}",
+                    ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(f"Exp1 vs Exp2 gap — {dimension}")
+        else:
+            _draw_gap_curve(ax, exp1, exp2, exp2_score, dimension, vlm)
+        fig.tight_layout()
+        return fig
+
+    # Extended figure: curve on top + example panels below
+    curve_h = float(figsize[1])
+    example_h = 4.2
+    fig_w = max(float(figsize[0]), 13.0)
+    total_h = curve_h + len(examples) * example_h
+
+    fig = plt.figure(figsize=(fig_w, total_h), layout="constrained")
+    gs = mgridspec.GridSpec(
+        1 + len(examples), 1,
+        figure=fig,
+        height_ratios=[curve_h] + [example_h] * len(examples),
+        hspace=0.55,
+    )
+
+    ax = fig.add_subplot(gs[0])
+    if no_data:
+        ax.text(0.5, 0.5, f"No data for dimension={dimension!r}",
+                ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(f"Exp1 vs Exp2 gap — {dimension}")
+    else:
+        _draw_gap_curve(ax, exp1, exp2, exp2_score, dimension, vlm)
+
+    _add_example_panels(fig, gs, examples, manifest_dir, start_row=1)
+
     return fig

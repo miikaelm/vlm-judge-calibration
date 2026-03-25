@@ -100,6 +100,8 @@ def run_analysis(
     output_dir: Path,
     model_name: str | None,
 ) -> None:
+    output_dir = output_dir.resolve()
+
     if results_exp1 is None and results_exp2 is None:
         print("ERROR: supply at least one of --results-exp1 / --results-exp2.")
         sys.exit(1)
@@ -170,7 +172,7 @@ def run_analysis(
             for dim in _ALL_DIMENSIONS:
                 if dim not in available_dims:
                     continue
-                fig = plot_exp_gap(df, dim, vlm=vlm)
+                fig = plot_exp_gap(df, dim, vlm=vlm, manifest_dir=manifest_dir)
                 save_fig(fig, vdir / "exp_gap" / f"{dim}.png")
 
         # ------------------------------------------------------------------

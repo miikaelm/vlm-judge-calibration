@@ -1074,9 +1074,9 @@ async def generate_stimuli(
                                 "degraded_value": deg["degraded_value"],
                                 "secondary_degs": [s["id"] for s in deg.get("secondary_degs", [])],
                             },
-                            "source_image": str(src_r.image_path.relative_to(output_dir)),
-                            "ground_truth_image": str(gt_r.image_path.relative_to(output_dir)),
-                            "degraded_image": str(deg_r.image_path.relative_to(output_dir)),
+                            "source_image": src_r.image_path.relative_to(output_dir).as_posix(),
+                            "ground_truth_image": gt_r.image_path.relative_to(output_dir).as_posix(),
+                            "degraded_image": deg_r.image_path.relative_to(output_dir).as_posix(),
                         }
                         all_errors = base_errors + deg_r.errors
                         if all_errors:
