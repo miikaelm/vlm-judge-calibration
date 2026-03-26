@@ -179,6 +179,20 @@ _BIDIRECTIONAL_DIMS = {
 }
 
 
+def _allowed_secondary_dims(secondary_dims: list[str], layout: "LayoutDefinition") -> list[str]:
+    """Filter secondary dims to those valid for layout's primary role.
+
+    Removes 'rotation' when the primary role has can_rotate=False (e.g. layouts
+    with two close text elements where rotation would cause overlap).
+    """
+    role = layout.primary_role
+    rc = layout.role_constraints.get(role)
+    can_rotate = rc is not None and rc.can_rotate
+    if not can_rotate:
+        return [d for d in secondary_dims if d != "rotation"]
+    return secondary_dims
+
+
 def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
     """Build per-dimension config lists, split by direction for bidirectional dims.
 
@@ -391,8 +405,9 @@ def _color_manifest(
 
         # 2. Unrelated specs: color is correct, one unrelated property is degraded per spec.
         # Each layout independently samples dims and, for bidirectional dims, a direction.
-        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
-        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
             if "positive" in dim_data:
@@ -474,8 +489,9 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
         ))
 
         # 2. Unrelated specs: scale is correct, one unrelated property is degraded per spec.
-        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
-        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
             if "positive" in dim_data:
@@ -586,8 +602,9 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
         ))
 
         # Unrelated specs: position is correct, one unrelated property is degraded.
-        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
-        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
             if "positive" in dim_data:
@@ -680,8 +697,9 @@ def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dic
         ))
 
         # Unrelated specs.
-        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
-        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
             if "positive" in dim_data:
@@ -773,8 +791,9 @@ def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], r
         ))
 
         # Unrelated specs.
-        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
-        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
             if "positive" in dim_data:
@@ -867,8 +886,9 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
         ))
 
         # Unrelated specs.
-        n_unrelated = min(_N_SECONDARY, len(secondary_dims))
-        sampled_dims = rng.sample(secondary_dims, n_unrelated)
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
             if "positive" in dim_data:
@@ -1084,7 +1104,37 @@ async def generate_stimuli(
 
                         f.write(json.dumps(record) + "\n")
 
-                    print(f"  [{i}/{n}] OK: {spec.stimulus_id} ({len(spec.degradations)} records)")
+                    # Pixel-perfect entry: degraded image IS the ground truth.
+                    pixel_perfect_record: dict = {
+                        "id": f"{spec.stimulus_id}_pixel_perfect",
+                        "edit_type": spec.edit_type,
+                        "layout": spec.layout_name,
+                        "layout_difficulty": layout.difficulty,
+                        "target_role": spec.target_role,
+                        "edit_instruction": instruction,
+                        "edit": {
+                            "property": spec.edit_property,
+                            "source_value": spec.source_value,
+                            "target_value": spec.target_value,
+                        },
+                        "degradation": {
+                            "dimension": spec.deg_dimension,
+                            "id": "pixel_perfect",
+                            "magnitude": 0,
+                            "layer": "html",
+                            "params": {},
+                            "degraded_value": spec.target_value,
+                            "secondary_degs": [],
+                        },
+                        "source_image": src_r.image_path.relative_to(output_dir).as_posix(),
+                        "ground_truth_image": gt_r.image_path.relative_to(output_dir).as_posix(),
+                        "degraded_image": gt_r.image_path.relative_to(output_dir).as_posix(),
+                    }
+                    if base_errors:
+                        pixel_perfect_record["render_errors"] = base_errors
+                    f.write(json.dumps(pixel_perfect_record) + "\n")
+
+                    print(f"  [{i}/{n}] OK: {spec.stimulus_id} ({len(spec.degradations)} records + pixel_perfect)")
                     n_ok += 1
 
                 except Exception as e:
