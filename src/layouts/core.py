@@ -36,6 +36,12 @@ class RoleConstraints:
     rotation_range: tuple[int, int] = (-30, 30)
     can_align: bool = False
     alignment_positions: list[str] = field(default_factory=list)
+    # Allowed directions for position_offset secondary degradations.
+    # Restrict when an adjacent element would be overlapped by that direction's translate.
+    # e.g. ["right", "left", "down"] when there is an element above the primary role.
+    position_offset_dirs: list[str] = field(
+        default_factory=lambda: ["right", "left", "down", "up"]
+    )
 
 
 @dataclass
@@ -70,6 +76,10 @@ class LayoutDefinition:
     # bg:       CSS background value
     html_builder: Callable[[dict[str, str], dict[str, dict], str], str]
     notes: str = ""
+    # Representative background color (hex) used to filter out low-contrast
+    # color targets. Set for layouts whose background has a strong hue (e.g.
+    # gradients, tinted overlays) that could swallow similarly-colored text.
+    effective_bg_color: str | None = None
 
 
 # ---------------------------------------------------------------------------

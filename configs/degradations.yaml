@@ -235,11 +235,11 @@ degradations:
 
   - id: scale_error_up_xxlarge
     dimension: scale_error
-    magnitude: scale_up_100pct
+    magnitude: scale_up_75pct
     layer: html
     params:
-      scale_error_pct: 100.0
-    notes: "Font double the correct size"
+      scale_error_pct: 75.0
+    notes: "Font 75% too large"
 
   - id: scale_error_down_small
     dimension: scale_error
@@ -318,11 +318,11 @@ degradations:
 
   - id: rotation_cw_xlarge
     dimension: rotation
-    magnitude: cw_45deg
+    magnitude: cw_22deg
     layer: html
     params:
-      angle_deg: 45
-    notes: "45° clockwise rotation"
+      angle_deg: 22
+    notes: "22° clockwise rotation"
 
   - id: rotation_ccw_tiny
     dimension: rotation
@@ -358,11 +358,11 @@ degradations:
 
   - id: rotation_ccw_xlarge
     dimension: rotation
-    magnitude: ccw_45deg
+    magnitude: ccw_22deg
     layer: html
     params:
-      angle_deg: -45
-    notes: "45° counter-clockwise rotation"
+      angle_deg: -22
+    notes: "22° counter-clockwise rotation"
 
   # ---------------------------------------------------------------------------
   # FONT WEIGHT — 9 configs (100–900 in steps of 100, lightest to heaviest)

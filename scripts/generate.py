@@ -68,10 +68,10 @@ _COLOR_TARGETS = [
 ]
 
 # Scale multipliers applied to the role's base font_size_px.
-_SCALE_MULTIPLIERS = [1.3, 1.5, 2.0, 0.75, 0.6]
+_SCALE_MULTIPLIERS = [1.3, 1.5, 1.75, 0.75, 0.6]
 
 # Rotation targets (degrees). Clamped to role's rotation_range at runtime.
-_ROTATION_TARGETS_DEG = [10, -10, 20, -20, 30, -30]
+_ROTATION_TARGETS_DEG = [10, -10, 15, -15, 20, -20]
 
 # ---------------------------------------------------------------------------
 # Relocation helpers — 3 × 3 alignment position grid (Chebyshev + Manhattan)
@@ -124,6 +124,20 @@ def _hex_to_rgb01(hex_color: str) -> tuple[float, float, float]:
 
 def _rgb01_to_hex(r: float, g: float, b: float) -> str:
     return f"#{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}"
+
+
+_MIN_CONTRAST_DELTA_E = 30.0  # minimum CIEDE2000 between text color and background
+
+
+def _color_contrast_ok(hex_color: str, bg_rgb: tuple[int, int, int]) -> bool:
+    """Return True if hex_color has sufficient perceptual contrast against bg_rgb."""
+    r, g, b = _hex_to_rgb01(hex_color)
+    lab1 = skcolor.rgb2lab(np.array([[[r, g, b]]]))
+    bg_r, bg_g, bg_b = bg_rgb[0] / 255.0, bg_rgb[1] / 255.0, bg_rgb[2] / 255.0
+    lab2 = skcolor.rgb2lab(np.array([[[bg_r, bg_g, bg_b]]]))
+    from skimage.color import deltaE_ciede2000
+    delta_e = float(deltaE_ciede2000(lab1, lab2)[0, 0])
+    return delta_e >= _MIN_CONTRAST_DELTA_E
 
 
 def _shift_color_lab(hex_color: str, delta_l: float) -> str:
@@ -198,6 +212,8 @@ def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
     """Build per-dimension config lists, split by direction for bidirectional dims.
 
     Returns {dim: {"positive": [...], "negative": [...]}} for bidirectional dims,
+    {dim: {"right": [...], "left": [...], "down": [...], "up": [...]}} for position_offset
+      (only directions that have configs are included),
     {dim: {"all": [...]}} for unidirectional dims.
     Lists are sorted ascending by magnitude (smallest first).
     """
@@ -221,15 +237,52 @@ def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
             )
             result[dim] = {"positive": pos_list, "negative": neg_list}
         elif dim == "position_offset":
-            # Multi-directional: sort all configs by Euclidean offset magnitude.
-            candidates.sort(
-                key=lambda c: (c["params"].get("offset_x_px", 0) ** 2
-                               + c["params"].get("offset_y_px", 0) ** 2) ** 0.5
-            )
-            result[dim] = {"all": candidates}
+            # Split by direction so each stimulus can randomly pick one direction via RNG.
+            # Using a single "all" bucket caused _pick_tiny_moderate_large to always return
+            # the same 3 configs (indices 0, n//2, n-1) regardless of layout or seed.
+            right = sorted([c for c in candidates if c["params"].get("offset_x_px", 0) > 0],
+                           key=lambda c: c["params"]["offset_x_px"])
+            left  = sorted([c for c in candidates if c["params"].get("offset_x_px", 0) < 0],
+                           key=lambda c: -c["params"]["offset_x_px"])
+            down  = sorted([c for c in candidates if c["params"].get("offset_y_px", 0) > 0],
+                           key=lambda c: c["params"]["offset_y_px"])
+            up    = sorted([c for c in candidates if c["params"].get("offset_y_px", 0) < 0],
+                           key=lambda c: -c["params"]["offset_y_px"])
+            result[dim] = {k: v for k, v in
+                           [("right", right), ("left", left), ("down", down), ("up", up)] if v}
         else:
             result[dim] = {"all": candidates}
     return result
+
+
+def _pick_secondary_candidates(
+    dim: str,
+    dim_data: dict,
+    rng: random.Random,
+    layout: "LayoutDefinition | None" = None,
+    role: str | None = None,
+) -> list[dict]:
+    """Return the candidate list for a secondary dim, picking a random direction via rng.
+
+    For position_offset, filters available directions by the role's position_offset_dirs
+    constraint so offsets don't push text into an adjacent element.
+    """
+    if "positive" in dim_data:
+        # Bidirectional (scale_error, rotation, letter_spacing): pick one direction.
+        direction = rng.choice(["positive", "negative"])
+        return dim_data[direction]
+    elif "all" not in dim_data:
+        # position_offset: directional buckets keyed by "right"/"left"/"down"/"up".
+        available = [k for k in ("right", "left", "down", "up") if dim_data.get(k)]
+        if layout is not None and role is not None:
+            rc = layout.role_constraints.get(role)
+            if rc is not None:
+                available = [k for k in available if k in rc.position_offset_dirs]
+        if not available:
+            return []
+        return dim_data[rng.choice(available)]
+    else:
+        return dim_data["all"]
 
 
 def _pick_tiny_moderate_large(configs: list[dict]) -> list[dict]:
@@ -371,9 +424,10 @@ def _color_manifest(
     layouts: list[LayoutDefinition],
     deg_configs: list[dict],
     rng=None,
+    seed=None,
 ) -> list[StimulusSpec]:
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
 
     color_degs = [d for d in deg_configs if d["dimension"] == "color_offset"]
     dim_configs = _build_dim_configs(deg_configs)
@@ -383,10 +437,17 @@ def _color_manifest(
     for layout in layouts:
         if "color" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         source_color = layout.role_base_styles[role]["color"]
         available_colors = [c for c in _COLOR_TARGETS if c.upper() != source_color.upper()]
-        target_color = rng.choice(available_colors)
+        if layout.effective_bg_color:
+            bg_rgb = tuple(int(layout.effective_bg_color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+            available_colors = [
+                c for c in available_colors
+                if _color_contrast_ok(c, bg_rgb)
+            ]
+        target_color = layout_rng.choice(available_colors)
 
         # 1. Primary spec: color_offset only — no secondary degradations
         color_degradations = []
@@ -418,15 +479,10 @@ def _color_manifest(
         # Each layout independently samples dims and, for bidirectional dims, a direction.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                # Bidirectional: pick one direction per layout so all 3 levels go the same way.
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -457,9 +513,9 @@ def _color_manifest(
     return specs
 
 
-def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
     scale_degs = [d for d in deg_configs if d["dimension"] == "scale_error"]
     dim_configs = _build_dim_configs(deg_configs)
     secondary_dims = [d for d in dim_configs.keys() if d != "scale_error"]
@@ -468,9 +524,10 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
     for layout in layouts:
         if "scale" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         base_size = layout.role_base_styles[role]["font_size_px"]
-        multiplier = rng.choice(_SCALE_MULTIPLIERS)
+        multiplier = layout_rng.choice(_SCALE_MULTIPLIERS)
         target_size = max(12, min(200, int(round(base_size * multiplier))))
 
         # 1. Primary spec: scale_error only
@@ -502,14 +559,10 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
         # 2. Unrelated specs: scale is correct, one unrelated property is degraded per spec.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -540,14 +593,14 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
     return specs
 
 
-def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
     """Relocation: move text to a different alignment position.
 
     Primary degradation: wrong alignment positions ordered by Manhattan distance from target.
     Secondary degradations: unrelated property errors while position is correct.
     """
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
     dim_configs = _build_dim_configs(deg_configs)
     # alignment_error is not in _SECONDARY_DIMS; position_offset is excluded because a
     # pixel nudge is meaningless when alignment is being changed wholesale (center → bottom-left).
@@ -557,6 +610,7 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
     for layout in layouts:
         if "relocation" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         rc = layout.role_constraints[role]
         available_positions = rc.alignment_positions
@@ -567,7 +621,7 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
         other_positions = [p for p in available_positions if p != base_alignment]
         if not other_positions:
             continue
-        target_alignment = rng.choice(other_positions)
+        target_alignment = layout_rng.choice(other_positions)
 
         # Wrong positions sorted by Manhattan distance from target (ascending = closest first).
         # Use only positions that are in _ALIGNMENT_GRID so distance is computable.
@@ -615,14 +669,10 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
         # Unrelated specs: position is correct, one unrelated property is degraded.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -653,14 +703,14 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
     return specs
 
 
-def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
     """Font weight: change the weight value (100–900).
 
     Primary degradation: wrong weight values sorted by distance from target.
     Secondary degradations: unrelated property errors while weight is correct.
     """
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
     fw_degs = [d for d in deg_configs if d["dimension"] == "font_weight"]
     dim_configs = _build_dim_configs(deg_configs)
     secondary_dims = [d for d in dim_configs.keys() if d != "font_weight"]
@@ -669,11 +719,12 @@ def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dic
     for layout in layouts:
         if "font_weight" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         base_weight_raw = layout.role_base_styles[role]["font_weight"]
         base_weight = _normalize_weight(base_weight_raw)
         available_targets = [w for w in _FONT_WEIGHT_TARGETS if w != base_weight]
-        target_weight = rng.choice(available_targets)
+        target_weight = layout_rng.choice(available_targets)
 
         # Wrong weights: all fw configs except target, sorted by distance from target.
         wrong_degs = sorted(
@@ -710,14 +761,10 @@ def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dic
         # Unrelated specs.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -748,14 +795,14 @@ def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dic
     return specs
 
 
-def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
     """Italic: flip font-style between normal and italic.
 
     Primary degradation: wrong font-style values (oblique = visually close to italic, normal = clearly wrong).
     Secondary degradations: unrelated property errors while font-style is correct.
     """
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
     dim_configs = _build_dim_configs(deg_configs)
     secondary_dims = [d for d in dim_configs.keys() if d != "font_style"]
 
@@ -763,6 +810,7 @@ def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], r
     for layout in layouts:
         if "italic" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         base_style = layout.role_base_styles[role].get("font_style", "normal")
 
@@ -804,14 +852,10 @@ def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], r
         # Unrelated specs.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -842,14 +886,14 @@ def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], r
     return specs
 
 
-def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
     """Letter spacing: change tracking to a target px value.
 
     Primary degradation: wrong letter-spacing values sorted by distance from target.
     Secondary degradations: unrelated property errors while letter-spacing is correct.
     """
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
     ls_degs = [d for d in deg_configs if d["dimension"] == "letter_spacing"]
     dim_configs = _build_dim_configs(deg_configs)
     secondary_dims = [d for d in dim_configs.keys() if d != "letter_spacing"]
@@ -858,9 +902,10 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
     for layout in layouts:
         if "letter_spacing" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         base_ls = layout.role_base_styles[role].get("letter_spacing", "normal")
-        target_px = rng.choice(_LETTER_SPACING_TARGETS_PX)
+        target_px = layout_rng.choice(_LETTER_SPACING_TARGETS_PX)
         target_value = f"{target_px}px"
 
         # Wrong letter-spacings: all ls configs except target, sorted by distance from target.
@@ -899,14 +944,10 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
         # Unrelated specs.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -937,9 +978,9 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
     return specs
 
 
-def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None) -> list[StimulusSpec]:
+def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
     if rng is None:
-        rng = random.Random(0)
+        rng = random.Random(seed)
     rot_degs = [d for d in deg_configs if d["dimension"] == "rotation"]
     dim_configs = _build_dim_configs(deg_configs)
     secondary_dims = [d for d in dim_configs.keys() if d != "rotation"]
@@ -948,10 +989,11 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
     for layout in layouts:
         if "rotation" not in layout.supported_edits:
             continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
         role = layout.primary_role
         rc = layout.role_constraints[role]
         lo, hi = rc.rotation_range
-        raw = rng.choice(_ROTATION_TARGETS_DEG)
+        raw = layout_rng.choice(_ROTATION_TARGETS_DEG)
         target_deg = float(max(lo, min(hi, raw)))
 
         # 1. Primary spec: rotation_error only
@@ -982,14 +1024,10 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
         # 2. Unrelated specs: rotation is correct, one unrelated property is degraded per spec.
         available_dims = _allowed_secondary_dims(secondary_dims, layout)
         n_unrelated = min(_N_SECONDARY, len(available_dims))
-        sampled_dims = rng.sample(available_dims, n_unrelated)
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
         for dim in sampled_dims:
             dim_data = dim_configs[dim]
-            if "positive" in dim_data:
-                direction = rng.choice(["positive", "negative"])
-                candidates = dim_data[direction]
-            else:
-                candidates = dim_data["all"]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
 
             three_levels = _pick_tiny_moderate_large(candidates)
             if not three_levels:
@@ -1038,8 +1076,12 @@ def build_manifest(
     count: int | None = None,
     seed: int | None = None,
 ) -> list[StimulusSpec]:
-    rng = random.Random(seed)  # deterministic regardless of seed=None (uses os.urandom)
-    specs = _MANIFEST_BUILDERS[edit_type](layouts, deg_configs, rng)
+    rng = random.Random(seed)  # deterministic if seed given, os-random if None
+    # Derive a concrete integer seed for per-layout sub-RNGs.
+    # When seed=None the rng is os-seeded, so effective_seed varies each run.
+    # When seed is given, effective_seed is a deterministic function of it.
+    effective_seed = rng.randint(0, 2**32 - 1)
+    specs = _MANIFEST_BUILDERS[edit_type](layouts, deg_configs, rng=rng, seed=effective_seed)
     rng.shuffle(specs)
     if count is not None:
         specs = specs[:count]

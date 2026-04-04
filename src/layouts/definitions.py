@@ -100,7 +100,7 @@ register(LayoutDefinition(
             color_editable=True,
             can_scale=True,
             can_rotate=True,
-            rotation_range=(-25, 25),
+            rotation_range=(-22, 22),
             can_align=True,
             alignment_positions=[
                 "top-left", "top-center", "top-right",
@@ -164,7 +164,9 @@ register(LayoutDefinition(
     primary_role="subtitle",  # title-type edits covered by solo_headline; this tests secondary text
     role_constraints={
         "title":    RoleConstraints(color_editable=True, can_scale=True),
-        "subtitle": RoleConstraints(color_editable=True, can_scale=True),
+        # title is above → "up" would overlap it
+        "subtitle": RoleConstraints(color_editable=True, can_scale=True,
+                                    position_offset_dirs=["right", "left", "down"]),
     },
     role_base_styles={
         "title": {
@@ -227,7 +229,9 @@ register(LayoutDefinition(
     primary_role="body",  # tests body/paragraph text color, smaller and lower contrast than a headline
     role_constraints={
         "header": RoleConstraints(color_editable=True, can_scale=True),
-        "body":   RoleConstraints(color_editable=True, can_scale=True),
+        # header is above → "up" would overlap it
+        "body":   RoleConstraints(color_editable=True, can_scale=True,
+                                  position_offset_dirs=["right", "left", "down"]),
     },
     role_base_styles={
         "header": {
@@ -297,7 +301,7 @@ register(LayoutDefinition(
     role_constraints={
         "title":  RoleConstraints(
             color_editable=True, can_scale=True,
-            can_rotate=True, rotation_range=(-30, 30),
+            can_rotate=True, rotation_range=(-22, 22),
         ),
         "byline": RoleConstraints(
             color_editable=True, can_scale=True,
@@ -368,7 +372,9 @@ register(LayoutDefinition(
     supported_edits=["color", "scale", "font_weight"],
     primary_role="name",
     role_constraints={
-        "name":         RoleConstraints(color_editable=True, can_scale=True),
+        # job_title and organization are below → "down" would overlap them
+        "name":         RoleConstraints(color_editable=True, can_scale=True,
+                                        position_offset_dirs=["right", "left", "up"]),
         "job_title":    RoleConstraints(color_editable=True, can_scale=True),
         "organization": RoleConstraints(color_editable=True, can_scale=True),
     },
@@ -446,7 +452,9 @@ register(LayoutDefinition(
     supported_edits=["color", "scale", "italic"],
     primary_role="quote",
     role_constraints={
-        "quote":       RoleConstraints(color_editable=True, can_scale=True),
+        # attribution is below → "down" would overlap it
+        "quote":       RoleConstraints(color_editable=True, can_scale=True,
+                                       position_offset_dirs=["right", "left", "up"]),
         "attribution": RoleConstraints(color_editable=True, can_scale=True),
     },
     role_base_styles={
@@ -664,7 +672,9 @@ register(LayoutDefinition(
     supported_edits=["color", "scale", "alignment", "letter_spacing"],
     primary_role="banner",
     role_constraints={
-        "banner": RoleConstraints(color_editable=True, can_scale=True),
+        # caption is below → "down" would overlap it
+        "banner": RoleConstraints(color_editable=True, can_scale=True,
+                                  position_offset_dirs=["right", "left", "up"]),
         "caption": RoleConstraints(
             color_editable=True, can_scale=True,
             can_align=True, alignment_positions=["left", "center", "right"],
@@ -829,7 +839,7 @@ register(LayoutDefinition(
             color_editable=True,
             can_scale=True,
             can_rotate=True,
-            rotation_range=(-25, 25),
+            rotation_range=(-22, 22),
             can_align=True,
             alignment_positions=[
                 "top-left", "top-center", "top-right",
@@ -852,6 +862,7 @@ register(LayoutDefinition(
     default_content={"headline": "Sample Heading"},
     background="linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
     background_type="gradient",
+    effective_bg_color="#764ba2",  # deep-purple end of gradient — worst case for contrast
     html_builder=_build_solo_headline,
     notes="White headline on purple-blue gradient. Easy tier. Tests color against gradient bg.",
 ))
@@ -877,7 +888,7 @@ register(LayoutDefinition(
             color_editable=True,
             can_scale=True,
             can_rotate=True,
-            rotation_range=(-25, 25),
+            rotation_range=(-22, 22),
             can_align=True,
             alignment_positions=[
                 "top-left", "top-center", "top-right",
@@ -929,7 +940,7 @@ register(LayoutDefinition(
             color_editable=True,
             can_scale=True,
             can_rotate=True,
-            rotation_range=(-25, 25),
+            rotation_range=(-22, 22),
             can_align=True,
             alignment_positions=[
                 "top-left", "top-center", "top-right",
@@ -956,6 +967,7 @@ register(LayoutDefinition(
         "url('https://picsum.photos/seed/2250/800/600') center/cover"
     ),
     background_type="image",
+    effective_bg_color="#11C96F",  # green tint overlay color — filters out similar greens
     html_builder=_build_solo_headline,
     notes=(
         "White headline (with shadow) on real photo (picsum seed 2250) with green tint overlay. "
