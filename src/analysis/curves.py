@@ -340,15 +340,22 @@ def _pick_example_stimuli(
     dimension: str,
     vlm: str | None,
     manifest_index: dict,
-    n: int = 3,
+    n: int = 10,
 ) -> list:
-    """Pick n stimuli at low / medium / high magnitude for the given dimension.
+    """Pick n stimuli for the given dimension.
+
+    Always includes at least one example from each key scale (low / medium /
+    high magnitude) when enough stimuli are available.  The remaining slots are
+    filled by a random sample from the leftover pool.  The final list is sorted
+    by ascending magnitude for display.
 
     Returns a list of dicts with keys:
         stimulus_id, magnitude_label, numeric_magnitude,
         instruction, source_image, ground_truth_image, degraded_image,
         exp1 (dict), exp2 (dict)
     """
+    import random
+
     filt = df["degradation_dimension"] == dimension
     if vlm is not None:
         filt &= df["model"] == vlm
@@ -375,17 +382,42 @@ def _pick_example_stimuli(
 
     sids_sorted = sorted(mag_map, key=lambda s: mag_map[s])
     total = len(sids_sorted)
-    if total == 1:
-        pick_indices = [0]
-    elif total == 2:
-        pick_indices = [0, total - 1]
-    else:
-        pick_indices = [0, total // 2, total - 1]
 
-    mag_labels = ["low", "medium", "high"]
+    # Guaranteed anchor indices: lowest, median, highest magnitude
+    if total == 1:
+        anchor_indices = [0]
+    elif total == 2:
+        anchor_indices = [0, total - 1]
+    else:
+        anchor_indices = [0, total // 2, total - 1]
+
+    anchor_sids = [sids_sorted[i] for i in anchor_indices]
+    remaining = [s for s in sids_sorted if s not in set(anchor_sids)]
+
+    # Fill up to n with random draws from the leftovers
+    n_extra = max(0, n - len(anchor_sids))
+    extra_sids = random.sample(remaining, min(n_extra, len(remaining)))
+
+    chosen = sorted(set(anchor_sids) | set(extra_sids), key=lambda s: mag_map[s])
+
+    # Assign magnitude labels by tertile
+    mag_values = [mag_map[s] for s in chosen]
+    if len(mag_values) > 1:
+        lo_thresh = mag_values[len(mag_values) // 3]
+        hi_thresh = mag_values[2 * len(mag_values) // 3]
+    else:
+        lo_thresh = hi_thresh = mag_values[0] if mag_values else 0.0
+
+    def _mag_label(v: float) -> str:
+        if v <= lo_thresh:
+            return "low"
+        if v >= hi_thresh:
+            return "high"
+        return "medium"
+
     results = []
-    for label, idx in zip(mag_labels, pick_indices[:n]):
-        sid = sids_sorted[idx]
+    for sid in chosen:
+        label = _mag_label(mag_map[sid])
         m = manifest_index[sid]
 
         e1_rows = sub_e1[sub_e1["stimulus_id"] == sid]
@@ -627,7 +659,7 @@ def plot_exp_gap(
     exp2_score: str = "overall_quality",
     figsize: tuple[float, float] = (8, 5),
     manifest_dir: Path | None = None,
-    n_examples: int = 3,
+    n_examples: int = 10,
 ) -> plt.Figure:
     """Plot Exp1 vs Exp2 scores for the same stimuli, grouped by magnitude.
 
@@ -637,10 +669,9 @@ def plot_exp_gap(
     The gap between the curves quantifies how much harder judging is vs
     simply detecting a difference.
 
-    When ``manifest_dir`` is given, three example stimuli (low / medium /
-    high magnitude) are appended below the curve, each showing the source,
-    ground-truth, and degraded images alongside the Exp1 and Exp2 scores
-    and the model's written comments.
+    When ``manifest_dir`` is given, example stimuli are appended below the
+    curve (default 10), always including at least one from each key scale
+    (low / medium / high magnitude), with the rest randomly sampled.
     """
     from matplotlib import gridspec as mgridspec
 

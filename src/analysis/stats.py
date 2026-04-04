@@ -160,32 +160,39 @@ def _exp1_stats(df: pd.DataFrame) -> dict:
 
     e1["detected"] = e1["detected_difference"].astype(bool)
 
+    # Split: perfect edits (mag=0) vs degraded edits (mag>0).
+    # Detection rate stats are only meaningful on degraded stimuli.
+    e1_deg = e1[e1["numeric_magnitude"] > 0].copy()
+    e1_perf = e1[e1["numeric_magnitude"] == 0].copy()
+
     out: dict[str, Any] = {}
 
-    # --- global ---
-    out["overall_detection_rate"] = float(e1["detected"].mean())
-    out["overall_false_negative_rate"] = 1.0 - out["overall_detection_rate"]
-    out["similarity_score_mean"] = float(e1["similarity_score"].mean())
-    out["similarity_score_std"] = float(e1["similarity_score"].std())
+    # --- global (degraded only) ---
+    if e1_deg.empty:
+        out["overall_detection_rate"] = float("nan")
+        out["overall_false_negative_rate"] = float("nan")
+    else:
+        out["overall_detection_rate"] = float(e1_deg["detected"].mean())
+        out["overall_false_negative_rate"] = 1.0 - out["overall_detection_rate"]
+    out["similarity_score_mean"] = float(e1_deg["similarity_score"].mean()) if not e1_deg.empty else float("nan")
+    out["similarity_score_std"] = float(e1_deg["similarity_score"].std()) if not e1_deg.empty else float("nan")
     out["similarity_score_distribution"] = {
         str(v): int(n)
-        for v, n in e1["similarity_score"].value_counts().sort_index().items()
-    }
+        for v, n in e1_deg["similarity_score"].value_counts().sort_index().items()
+    } if not e1_deg.empty else {}
 
-    # --- per dimension ---
-    dims = sorted(e1["degradation_dimension"].unique())
+    # --- per dimension (degraded only) ---
+    dims = sorted(e1_deg["degradation_dimension"].unique()) if not e1_deg.empty else []
     per_dim: dict[str, Any] = {}
     for dim in dims:
-        sub = e1[e1["degradation_dimension"] == dim]
+        sub = e1_deg[e1_deg["degradation_dimension"] == dim]
         det = sub["detected"].values
-        sim = sub["similarity_score"].dropna().values
         mags = sub["numeric_magnitude"].values
 
         rho_det, p_det = _safe_pointbiserial(mags, det)
-        rho_sim, p_sim = _safe_spearman(mags, sim) if len(sim) == len(mags) else (float("nan"), float("nan"))
         rho_sim_all, p_sim_all = _safe_spearman(mags, sub["similarity_score"].values)
 
-        # per-magnitude detection rate table
+        # per-magnitude detection rate table (mag > 0 only)
         mag_table = (
             sub.groupby("numeric_magnitude")["detected"]
             .agg(["mean", "count"])
@@ -212,7 +219,7 @@ def _exp1_stats(df: pd.DataFrame) -> dict:
             # thresholds
             "jnd_50pct": jnd,
             "jnd_75pct": jnd75,
-            # per-magnitude breakdown
+            # per-magnitude breakdown (degraded only)
             "by_magnitude": {
                 str(row["numeric_magnitude"]): {
                     "detection_rate": round(float(row["detection_rate"]), 4),
@@ -224,16 +231,45 @@ def _exp1_stats(df: pd.DataFrame) -> dict:
 
     out["by_dimension"] = per_dim
 
-    # --- per edit type ---
+    # --- per edit type (degraded only) ---
     per_et: dict[str, Any] = {}
-    for et in sorted(e1["edit_type"].unique()):
-        sub = e1[e1["edit_type"] == et]
+    for et in sorted(e1_deg["edit_type"].unique()) if not e1_deg.empty else []:
+        sub = e1_deg[e1_deg["edit_type"] == et]
         per_et[et] = {
             "n": int(len(sub)),
             "detection_rate": float(sub["detected"].mean()),
             "similarity_score_mean": float(sub["similarity_score"].mean()),
         }
     out["by_edit_type"] = per_et
+
+    # --- perfect edits (mag=0): false positive analysis ---
+    if not e1_perf.empty:
+        fp_overall = float(e1_perf["detected"].mean())
+        sim_vals = e1_perf["similarity_score"].dropna()
+        perf_dims: dict[str, Any] = {}
+        for dim in sorted(e1_perf["degradation_dimension"].unique()):
+            sub = e1_perf[e1_perf["degradation_dimension"] == dim]
+            sv = sub["similarity_score"].dropna()
+            perf_dims[dim] = {
+                "n": int(len(sub)),
+                "false_positive_rate": round(float(sub["detected"].mean()), 4),
+                "similarity_score_mean": round(float(sv.mean()), 4) if len(sv) else None,
+                "similarity_score_distribution": {
+                    str(v): int(n)
+                    for v, n in sub["similarity_score"].value_counts().sort_index().items()
+                },
+            }
+        out["perfect_edits"] = {
+            "n": int(len(e1_perf)),
+            "false_positive_rate": round(fp_overall, 4),
+            "similarity_score_mean": round(float(sim_vals.mean()), 4) if len(sim_vals) else None,
+            "similarity_score_std": round(float(sim_vals.std()), 4) if len(sim_vals) else None,
+            "similarity_score_distribution": {
+                str(v): int(n)
+                for v, n in e1_perf["similarity_score"].value_counts().sort_index().items()
+            },
+            "by_dimension": perf_dims,
+        }
 
     return out
 
@@ -329,6 +365,41 @@ def _exp2_stats(df: pd.DataFrame) -> dict:
             "overall_quality_std": round(float(sub["overall_quality"].std()), 4),
         }
     out["by_edit_type"] = per_et
+
+    # --- perfect edits (mag=0): bad-rating analysis ---
+    e2_perf = e2[e2["numeric_magnitude"] == 0].copy()
+    if not e2_perf.empty:
+        perf_scores: dict[str, Any] = {}
+        for col in EXP2_SCORE_COLS:
+            vals = e2_perf[col].dropna()
+            if len(vals) == 0:
+                continue
+            perf_scores[col] = {
+                "mean": round(float(vals.mean()), 4),
+                "std": round(float(vals.std()), 4) if len(vals) > 1 else 0.0,
+                "below_5_rate": round(float((vals < 5).mean()), 4),
+                "bad_rating_rate": round(float((vals <= 3).mean()), 4),
+                "distribution": {str(v): int(n) for v, n in vals.value_counts().sort_index().items()},
+            }
+        perf_by_dim: dict[str, Any] = {}
+        for dim in sorted(e2_perf["degradation_dimension"].unique()):
+            sub = e2_perf[e2_perf["degradation_dimension"] == dim]
+            dim_entry: dict[str, Any] = {"n": int(len(sub))}
+            for col in EXP2_SCORE_COLS:
+                vals = sub[col].dropna().values
+                if len(vals) == 0:
+                    continue
+                dim_entry[col] = {
+                    "mean": round(float(vals.mean()), 4),
+                    "below_5_rate": round(float((vals < 5).mean()), 4),
+                    "bad_rating_rate": round(float((vals <= 3).mean()), 4),
+                }
+            perf_by_dim[dim] = dim_entry
+        out["perfect_edits"] = {
+            "n": int(len(e2_perf)),
+            "score_descriptives": perf_scores,
+            "by_dimension": perf_by_dim,
+        }
 
     return out
 
@@ -565,6 +636,26 @@ def print_report(stats: dict) -> None:
                   f"{d.get('similarity_score_mean', 0):>9.3f} "
                   f"{rho_det_str:>10} {rho_sim_str:>10} {jnd_str:>8}")
 
+    # Exp1 perfect edits
+    perf1 = e1.get("perfect_edits")
+    if perf1:
+        print(f"\n  Perfect edits (mag=0) — false positive analysis (n={perf1['n']}):")
+        print(f"  Overall false positive rate  : {perf1.get('false_positive_rate', float('nan')):.1%}")
+        sim_m = perf1.get('similarity_score_mean')
+        sim_s = perf1.get('similarity_score_std')
+        if sim_m is not None:
+            print(f"  Sim. score mean (should=5)   : {sim_m:.3f}"
+                  + (f" ± {sim_s:.3f}" if sim_s is not None else ""))
+        print(f"  Sim. score distribution      : {perf1.get('similarity_score_distribution', {})}")
+        print()
+        print(f"  {'Dimension':<22} {'FP Rate':>9} {'Sim.Mean':>9}")
+        print(f"  {'-'*22} {'-'*9} {'-'*9}")
+        for dim, d in sorted(perf1.get("by_dimension", {}).items()):
+            fp = d.get("false_positive_rate", 0)
+            sm = d.get("similarity_score_mean")
+            sm_str = f"{sm:.3f}" if sm is not None else "    —"
+            print(f"  {dim:<22} {fp:>9.1%} {sm_str:>9}")
+
     # Exp2
     print(f"\n{'-'*68}")
     print("EXP 2 — INSTRUCTION-FOLLOWING (multi-dimensional scores 1–5)")
@@ -601,6 +692,30 @@ def print_report(stats: dict) -> None:
             p_str = f"{p:.4f}" if p is not None else "      —"
             print(f"  {dim:<22} {oq.get('mean', 0):>8.3f} {oq.get('std', 0):>7.3f} "
                   f"{oq.get('ceiling_rate', 0):>7.1%} {rho_str:>10} {p_str:>8}")
+
+    # Exp2 perfect edits
+    perf2 = e2.get("perfect_edits")
+    if perf2:
+        print(f"\n  Perfect edits (mag=0) — bad-rating analysis (n={perf2['n']}):")
+        sd_p = perf2.get("score_descriptives", {})
+        print(f"  (bad rating = score ≤ 3; ideal = 5 on all dimensions)")
+        print()
+        print(f"  {'Score col':<24} {'Mean':>6} {'Std':>6} {'<5%':>7} {'≤3%':>7}")
+        print(f"  {'-'*24} {'-'*6} {'-'*6} {'-'*7} {'-'*7}")
+        for col in EXP2_SCORE_COLS:
+            s = sd_p.get(col, {})
+            if not s:
+                continue
+            print(f"  {col:<24} {s.get('mean', 0):>6.3f} {s.get('std', 0):>6.3f} "
+                  f"{s.get('below_5_rate', 0):>7.1%} {s.get('bad_rating_rate', 0):>7.1%}")
+        print()
+        print(f"  {'Dimension':<22} {'OQ.Mean':>8} {'<5%':>7} {'≤3%':>7}")
+        print(f"  {'-'*22} {'-'*8} {'-'*7} {'-'*7}")
+        for dim, d in sorted(perf2.get("by_dimension", {}).items()):
+            oq = d.get("overall_quality", {})
+            print(f"  {dim:<22} {oq.get('mean', 0):>8.3f} "
+                  f"{oq.get('below_5_rate', 0):>7.1%} "
+                  f"{oq.get('bad_rating_rate', 0):>7.1%}")
 
     # Cross-exp
     print(f"\n{'-'*68}")

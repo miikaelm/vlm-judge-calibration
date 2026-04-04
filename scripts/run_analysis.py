@@ -33,7 +33,12 @@ _repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_repo_root / "src"))
 
 from analysis.curves import load_results, plot_sensitivity_curve, plot_exp_gap
-from analysis.heatmap import plot_detection_heatmap, plot_score_heatmap
+from analysis.heatmap import (
+    plot_detection_heatmap,
+    plot_score_heatmap,
+    plot_perfect_detection_heatmap,
+    plot_perfect_score_heatmap,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +194,21 @@ def run_analysis(
                 fig = plot_score_heatmap(df, vlm, score_col=score_col)
                 save_fig(fig, vdir / "heatmaps" / f"score_{score_col}.png")
 
+        # ------------------------------------------------------------------
+        # 5. Perfect-edit heatmaps (magnitude = 0)
+        # ------------------------------------------------------------------
+        if has_exp1:
+            print(f"[{vlm}] Perfect-edit false positive heatmap (Exp1) ...")
+            fig = plot_perfect_detection_heatmap(df, vlm)
+            save_fig(fig, vdir / "heatmaps" / "perfect_false_positive_rate.png")
+
+        if has_exp2:
+            print(f"[{vlm}] Perfect-edit score heatmap (Exp2) ...")
+            fig = plot_perfect_score_heatmap(df, vlm)
+            save_fig(fig, vdir / "heatmaps" / "perfect_scores.png")
+
     # ------------------------------------------------------------------
-    # 5. Cross-model comparison heatmaps (if multiple models, Exp2 needed)
+    # 6. Cross-model comparison heatmaps (if multiple models, Exp2 needed)
     # ------------------------------------------------------------------
     if len(vlms) > 1 and has_exp2:
         print("\nCross-model comparison ...")
