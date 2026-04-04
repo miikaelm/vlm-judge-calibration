@@ -459,25 +459,11 @@ degradations:
     notes: "Switch to oblique"
 
   # ---------------------------------------------------------------------------
-  # LETTER SPACING — 4 positive + 4 negative = 8 configs
+  # LETTER SPACING — 3 positive + 2 negative = 5 configs
+  # Sub-1px positive values removed (indistinguishable from normal spacing).
+  # Negative capped at -2px to avoid severe character overlap.
   # ---------------------------------------------------------------------------
-  - id: letter_spacing_pos_tiny
-    dimension: letter_spacing
-    magnitude: pos_0_5px
-    layer: html
-    params:
-      letter_spacing_px: 0.5
-    notes: "+0.5px letter spacing"
-
   - id: letter_spacing_pos_small
-    dimension: letter_spacing
-    magnitude: pos_1px
-    layer: html
-    params:
-      letter_spacing_px: 1
-    notes: "+1px letter spacing"
-
-  - id: letter_spacing_pos_medium
     dimension: letter_spacing
     magnitude: pos_2px
     layer: html
@@ -485,7 +471,7 @@ degradations:
       letter_spacing_px: 2
     notes: "+2px letter spacing"
 
-  - id: letter_spacing_pos_large
+  - id: letter_spacing_pos_medium
     dimension: letter_spacing
     magnitude: pos_5px
     layer: html
@@ -493,21 +479,13 @@ degradations:
       letter_spacing_px: 5
     notes: "+5px letter spacing"
 
-  - id: letter_spacing_pos_xlarge
+  - id: letter_spacing_pos_large
     dimension: letter_spacing
     magnitude: pos_10px
     layer: html
     params:
       letter_spacing_px: 10
     notes: "+10px letter spacing"
-
-  - id: letter_spacing_neg_tiny
-    dimension: letter_spacing
-    magnitude: neg_0_5px
-    layer: html
-    params:
-      letter_spacing_px: -0.5
-    notes: "-0.5px letter spacing"
 
   - id: letter_spacing_neg_small
     dimension: letter_spacing
@@ -524,22 +502,6 @@ degradations:
     params:
       letter_spacing_px: -2
     notes: "-2px letter spacing"
-
-  - id: letter_spacing_neg_large
-    dimension: letter_spacing
-    magnitude: neg_5px
-    layer: html
-    params:
-      letter_spacing_px: -5
-    notes: "-5px letter spacing"
-
-  - id: letter_spacing_neg_xlarge
-    dimension: letter_spacing
-    magnitude: neg_10px
-    layer: html
-    params:
-      letter_spacing_px: -10
-    notes: "-10px letter spacing"
 
   # ---------------------------------------------------------------------------
   # OPACITY — 10 configs (0.95 → 0.30, fully unidirectional, less opaque)

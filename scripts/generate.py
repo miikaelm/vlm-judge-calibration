@@ -109,7 +109,8 @@ def _normalize_weight(w) -> int:
 # ---------------------------------------------------------------------------
 
 # Target letter-spacing values (px). Chosen to span a clear visible range.
-_LETTER_SPACING_TARGETS_PX: list[float] = [2, 5, 10, -2, -5]
+# Negative values capped at -2px to avoid severe character overlap.
+_LETTER_SPACING_TARGETS_PX: list[float] = [2, 5, 10, -2]
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +167,7 @@ class StimulusSpec:
 
 # Dimensions (other than the primary edit dim) that can be applied as style-dict
 # overrides without needing element IDs or HTML surgery.
-_SECONDARY_DIMS = ["scale_error", "rotation", "font_weight", "font_style", "letter_spacing", "opacity"]
+_SECONDARY_DIMS = ["scale_error", "rotation", "position_offset", "font_weight", "font_style", "letter_spacing", "opacity"]
 
 # How many unrelated degradation dimensions to sample per layout.
 _N_SECONDARY = 5
@@ -219,6 +220,13 @@ def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
                 key=lambda c: -c["params"][param_key],  # ascending magnitude (−1 before −10)
             )
             result[dim] = {"positive": pos_list, "negative": neg_list}
+        elif dim == "position_offset":
+            # Multi-directional: sort all configs by Euclidean offset magnitude.
+            candidates.sort(
+                key=lambda c: (c["params"].get("offset_x_px", 0) ** 2
+                               + c["params"].get("offset_y_px", 0) ** 2) ** 0.5
+            )
+            result[dim] = {"all": candidates}
         else:
             result[dim] = {"all": candidates}
     return result
@@ -246,6 +254,9 @@ def _apply_secondary_degs_to_styles(
             error_pct = params["scale_error_pct"]
             new_size = max(12, min(200, round(base_size * (1 + error_pct / 100))))
             styles[role]["font_size_px"] = new_size
+        elif dim == "position_offset":
+            styles[role]["position_offset_x"] = params.get("offset_x_px", 0)
+            styles[role]["position_offset_y"] = params.get("offset_y_px", 0)
         elif dim == "rotation":
             styles[role]["rotation_deg"] = params["angle_deg"]
         elif dim == "font_weight":
@@ -312,10 +323,17 @@ def _edit_instruction(spec: "StimulusSpec", target_text: str, rng: random.Random
 
     elif spec.edit_type == "font_weight":
         new_w = int(tgt) if isinstance(tgt, (int, float)) else tgt
-        is_bold = new_w in (700, 800, 900, "bold", "bolder")
-        if is_bold:
+        old_w = _normalize_weight(src) if src is not None else 400
+        is_bold_target = new_w >= 700
+        is_bold_source = old_w >= 700
+        if is_bold_target and not is_bold_source:
             return f"Make the {ref} bold" if ref == role_ref else f"Make {ref} bold"
-        return f"Remove the bold style from the {ref}" if ref == role_ref else f"Remove bold from {ref}"
+        elif is_bold_source and not is_bold_target:
+            return f"Remove the bold style from the {ref}" if ref == role_ref else f"Remove bold from {ref}"
+        else:
+            # Both bold (e.g. 700→900) or neither bold (e.g. 400→100): describe direction.
+            direction = "lighter" if new_w < old_w else "heavier"
+            return f"Make the {ref} {direction}" if ref == role_ref else f"Make {ref} {direction}"
 
     elif spec.edit_type == "italic":
         if str(tgt) == "italic":
@@ -326,16 +344,9 @@ def _edit_instruction(spec: "StimulusSpec", target_text: str, rng: random.Random
         def _px_val(v) -> float:
             s = str(v).replace("px", "").replace("em", "").replace("rem", "").strip()
             return float(s) if s not in ("", "normal") else 0.0
-        increasing = _px_val(tgt) >= _px_val(src)
-        if rng.random() < 0.40:
-            phrase = rng.choice(
-                ["spread the letters out more", "add more space between the letters", "space out the letters"]
-                if increasing else
-                ["tighten the letter spacing", "bring the letters closer together", "reduce the space between the letters"]
-            )
-            return f"For the {ref}, {phrase}" if ref == role_ref else f"For {ref}, {phrase}"
-        direction = "Increase" if increasing else "Decrease"
-        return f"{direction} the letter spacing of the {ref}" if ref == role_ref else f"{direction} the letter spacing of {ref}"
+        tgt_num = _px_val(tgt)
+        tgt_str = f"{int(tgt_num)}px" if tgt_num == int(tgt_num) else f"{tgt_num}px"
+        return f"Set the letter spacing of the {ref} to {tgt_str}" if ref == role_ref else f"Set the letter spacing of {ref} to {tgt_str}"
 
     elif spec.edit_type == "rotation":
         old_deg = float(str(src)) if src else 0.0
@@ -930,6 +941,9 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
     if rng is None:
         rng = random.Random(0)
     rot_degs = [d for d in deg_configs if d["dimension"] == "rotation"]
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = [d for d in dim_configs.keys() if d != "rotation"]
+
     specs = []
     for layout in layouts:
         if "rotation" not in layout.supported_edits:
@@ -940,6 +954,7 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
         raw = rng.choice(_ROTATION_TARGETS_DEG)
         target_deg = float(max(lo, min(hi, raw)))
 
+        # 1. Primary spec: rotation_error only
         degradations = []
         for deg in rot_degs:
             error_deg = deg["params"]["angle_deg"]
@@ -963,6 +978,45 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
             deg_dimension="rotation",
             degradations=degradations,
         ))
+
+        # 2. Unrelated specs: rotation is correct, one unrelated property is degraded per spec.
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = rng.sample(available_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            if "positive" in dim_data:
+                direction = rng.choice(["positive", "negative"])
+                candidates = dim_data[direction]
+            else:
+                candidates = dim_data["all"]
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_deg,  # rotation is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"rotation_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="rotation",
+                target_role=role,
+                edit_property="rotation_deg",
+                source_value=0.0,
+                target_value=target_deg,
+                deg_dimension=dim,
+                degradations=unrelated_degradations,
+            ))
+
     return specs
 
 

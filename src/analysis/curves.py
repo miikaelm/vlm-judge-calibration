@@ -53,7 +53,9 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
         return abs(int(fw) - 400)
 
     elif dimension == "font_style":
-        return {"italic": 1.0, "oblique": 0.5}.get(
+        # "normal" is the most wrong degradation when the target was "italic"
+        # (it is completely un-italic, not merely a subtle oblique variant).
+        return {"italic": 1.0, "oblique": 0.5, "normal": 1.0}.get(
             str(params.get("font_style", "")), 0.0
         )
 
@@ -314,6 +316,20 @@ def plot_sensitivity_curve(
 # Helpers for the Exp-gap example panels
 # ---------------------------------------------------------------------------
 
+# Maps degradation dimension → the edit_type that is "in-dimension" for it.
+# Dimensions absent from this map have no clear primary edit type; those
+# samples are still included but all treated as secondary.
+_DIM_TO_EDIT_TYPE: dict[str, str] = {
+    "color_offset":    "color",
+    "alignment_error": "relocation",
+    "rotation":        "rotation",
+    "scale_error":     "scale",
+    "font_weight":     "font_weight",
+    "font_style":      "italic",
+    "letter_spacing":  "letter_spacing",
+}
+
+
 def _load_manifest_index(manifest_dir: Path) -> dict:
     """Load manifest.jsonl into a dict keyed by stimulus id."""
     manifest_file = manifest_dir / "manifest.jsonl"
@@ -340,19 +356,32 @@ def _pick_example_stimuli(
     dimension: str,
     vlm: str | None,
     manifest_index: dict,
-    n: int = 10,
+    n_secondary: int = 5,
 ) -> list:
-    """Pick n stimuli for the given dimension.
+    """Pick example stimuli for the given dimension.
 
-    Always includes at least one example from each key scale (low / medium /
-    high magnitude) when enough stimuli are available.  The remaining slots are
-    filled by a random sample from the leftover pool.  The final list is sorted
-    by ascending magnitude for display.
+    Strategy
+    --------
+    *In-dimension* samples (``sample_type="in_dimension"``):
+        For dimensions that have a matching primary edit type (see
+        ``_DIM_TO_EDIT_TYPE``), pick **one representative per unique
+        numeric magnitude** where the edit type is that primary type.
+        This ensures every severity level of the "correct" degradation
+        is visible.
+
+    *Secondary* samples (``sample_type="secondary"``):
+        Up to ``n_secondary`` stimuli from the same dimension but a
+        *different* edit type, stratified across magnitude (low / medium /
+        high) where possible.
+
+    For dimensions with no primary edit type all available stimuli are
+    treated as secondary and the original anchor-plus-random selection
+    is used.
 
     Returns a list of dicts with keys:
-        stimulus_id, magnitude_label, numeric_magnitude,
-        instruction, source_image, ground_truth_image, degraded_image,
-        exp1 (dict), exp2 (dict)
+        stimulus_id, sample_type, edit_type, magnitude_label,
+        numeric_magnitude, instruction, source_image, ground_truth_image,
+        degraded_image, exp1 (dict), exp2 (dict)
     """
     import random
 
@@ -368,45 +397,100 @@ def _pick_example_stimuli(
     if not sids_with_meta:
         return []
 
-    # Build magnitude map — prefer exp2 row, fall back to exp1
-    mag_map: dict = {}
+    # Build magnitude map and edit_type map per stimulus
+    mag_map: dict[str, float] = {}
+    et_map: dict[str, str] = {}
     for sid in sids_with_meta:
         row = sub_e2[sub_e2["stimulus_id"] == sid]
         if row.empty:
             row = sub_e1[sub_e1["stimulus_id"] == sid]
         if not row.empty:
             mag_map[sid] = float(row["numeric_magnitude"].iloc[0])
+            et_map[sid] = str(row["edit_type"].iloc[0])
 
     if not mag_map:
         return []
 
-    sids_sorted = sorted(mag_map, key=lambda s: mag_map[s])
-    total = len(sids_sorted)
+    primary_et = _DIM_TO_EDIT_TYPE.get(dimension)
 
-    # Guaranteed anchor indices: lowest, median, highest magnitude
-    if total == 1:
-        anchor_indices = [0]
-    elif total == 2:
-        anchor_indices = [0, total - 1]
+    # ------------------------------------------------------------------ #
+    # In-dimension: one sample per unique magnitude for the primary type  #
+    # ------------------------------------------------------------------ #
+    in_dim_sids: list[str] = []
+    if primary_et is not None:
+        # Group by magnitude; pick one sid per bucket (prefer exp2 data)
+        mag_to_sids: dict[float, list[str]] = {}
+        for sid, mag in mag_map.items():
+            if et_map.get(sid) == primary_et:
+                mag_to_sids.setdefault(mag, []).append(sid)
+
+        for mag in sorted(mag_to_sids):
+            bucket = mag_to_sids[mag]
+            # Prefer a stimulus that has exp2 data
+            has_e2 = [s for s in bucket
+                      if not sub_e2[sub_e2["stimulus_id"] == s].empty]
+            chosen_sid = has_e2[0] if has_e2 else bucket[0]
+            in_dim_sids.append(chosen_sid)
+
+    in_dim_set = set(in_dim_sids)
+
+    # ------------------------------------------------------------------ #
+    # Secondary: up to n_secondary from different edit types              #
+    # ------------------------------------------------------------------ #
+    secondary_pool = [
+        sid for sid in mag_map
+        if sid not in in_dim_set
+        and mag_map[sid] > 0
+        and (primary_et is None or et_map.get(sid) != primary_et)
+    ]
+    secondary_pool_sorted = sorted(secondary_pool, key=lambda s: mag_map[s])
+    total_sec = len(secondary_pool_sorted)
+
+    if primary_et is None:
+        # No primary — fall back to anchor + random from the whole pool
+        if total_sec == 1:
+            anchor_indices = [0]
+        elif total_sec == 2:
+            anchor_indices = [0, total_sec - 1]
+        else:
+            anchor_indices = [0, total_sec // 2, total_sec - 1]
+        anchor_sids = [secondary_pool_sorted[i] for i in anchor_indices]
+        remaining = [s for s in secondary_pool_sorted if s not in set(anchor_sids)]
+        extra = random.sample(remaining, min(max(0, n_secondary - len(anchor_sids)), len(remaining)))
+        secondary_sids = sorted(set(anchor_sids) | set(extra), key=lambda s: mag_map[s])
     else:
-        anchor_indices = [0, total // 2, total - 1]
+        # Stratified by magnitude tertile
+        if total_sec == 0:
+            secondary_sids = []
+        elif total_sec <= n_secondary:
+            secondary_sids = secondary_pool_sorted
+        else:
+            lo = secondary_pool_sorted[: total_sec // 3]
+            mid = secondary_pool_sorted[total_sec // 3 : 2 * total_sec // 3]
+            hi = secondary_pool_sorted[2 * total_sec // 3 :]
+            chosen_sec: list[str] = []
+            for bucket in (lo, mid, hi):
+                k = max(1, n_secondary // 3)
+                chosen_sec.extend(random.sample(bucket, min(k, len(bucket))))
+            # top up if slots remain
+            picked = set(chosen_sec)
+            remaining = [s for s in secondary_pool_sorted if s not in picked]
+            while len(chosen_sec) < n_secondary and remaining:
+                s = random.choice(remaining)
+                chosen_sec.append(s)
+                remaining.remove(s)
+            secondary_sids = sorted(chosen_sec[:n_secondary], key=lambda s: mag_map[s])
 
-    anchor_sids = [sids_sorted[i] for i in anchor_indices]
-    remaining = [s for s in sids_sorted if s not in set(anchor_sids)]
-
-    # Fill up to n with random draws from the leftovers
-    n_extra = max(0, n - len(anchor_sids))
-    extra_sids = random.sample(remaining, min(n_extra, len(remaining)))
-
-    chosen = sorted(set(anchor_sids) | set(extra_sids), key=lambda s: mag_map[s])
-
-    # Assign magnitude labels by tertile
-    mag_values = [mag_map[s] for s in chosen]
-    if len(mag_values) > 1:
-        lo_thresh = mag_values[len(mag_values) // 3]
-        hi_thresh = mag_values[2 * len(mag_values) // 3]
+    # ------------------------------------------------------------------ #
+    # Assign magnitude labels                                             #
+    # ------------------------------------------------------------------ #
+    all_chosen = list(in_dim_sids) + [s for s in secondary_sids if s not in in_dim_set]
+    all_mags = [mag_map[s] for s in all_chosen]
+    if len(all_mags) > 1:
+        lo_thresh = sorted(all_mags)[len(all_mags) // 3]
+        hi_thresh = sorted(all_mags)[2 * len(all_mags) // 3]
     else:
-        lo_thresh = hi_thresh = mag_values[0] if mag_values else 0.0
+        lo_thresh = hi_thresh = all_mags[0] if all_mags else 0.0
 
     def _mag_label(v: float) -> str:
         if v <= lo_thresh:
@@ -415,11 +499,8 @@ def _pick_example_stimuli(
             return "high"
         return "medium"
 
-    results = []
-    for sid in chosen:
-        label = _mag_label(mag_map[sid])
+    def _build_entry(sid: str, sample_type: str) -> dict:
         m = manifest_index[sid]
-
         e1_rows = sub_e1[sub_e1["stimulus_id"] == sid]
         e1: dict = {}
         if not e1_rows.empty:
@@ -429,7 +510,6 @@ def _pick_example_stimuli(
                 "detected_difference": r.get("detected_difference"),
                 "description": r.get("exp1_description") or "",
             }
-
         e2_rows = sub_e2[sub_e2["stimulus_id"] == sid]
         e2: dict = {}
         if not e2_rows.empty:
@@ -442,10 +522,11 @@ def _pick_example_stimuli(
                 "overall_quality": r.get("overall_quality"),
                 "errors_noticed": r.get("errors_noticed") or "",
             }
-
-        results.append({
+        return {
             "stimulus_id": sid,
-            "magnitude_label": label,
+            "sample_type": sample_type,
+            "edit_type": et_map.get(sid, "unknown"),
+            "magnitude_label": _mag_label(mag_map[sid]),
             "numeric_magnitude": mag_map[sid],
             "instruction": m.get("edit_instruction", ""),
             "source_image": m.get("source_image", ""),
@@ -453,7 +534,14 @@ def _pick_example_stimuli(
             "degraded_image": m.get("degraded_image", ""),
             "exp1": e1,
             "exp2": e2,
-        })
+        }
+
+    results: list[dict] = []
+    for sid in in_dim_sids:
+        results.append(_build_entry(sid, "in_dimension"))
+    for sid in secondary_sids:
+        if sid not in in_dim_set:
+            results.append(_build_entry(sid, "secondary"))
     return results
 
 
@@ -590,18 +678,35 @@ def _add_example_panels(
         row_spec = outer_gs[start_row + i]
         inner_gs = row_spec.subgridspec(2, 1, height_ratios=[1, 9], hspace=0.1)
 
-        # Header bar
+        # Header bar — colour-coded by sample type
         ax_hdr = fig.add_subplot(inner_gs[0])
         ax_hdr.axis("off")
         mag_val = ex["numeric_magnitude"]
         mag_str = f"{mag_val:.3g}" if mag_val != int(mag_val) else str(int(mag_val))
+        sample_type = ex.get("sample_type", "")
+        edit_type_str = ex.get("edit_type", "")
+        if sample_type == "in_dimension":
+            tag = "IN-DIM"
+            hdr_bg = "#d4edda"   # light green
+            hdr_fg = "#155724"
+        elif sample_type == "secondary":
+            tag = "SECONDARY"
+            hdr_bg = "#fff3cd"   # light amber
+            hdr_fg = "#856404"
+        else:
+            tag = ""
+            hdr_bg = "#e8e8e8"
+            hdr_fg = "#222222"
+        tag_str = f"[{tag}]  " if tag else ""
+        et_str = f"  │  edit: {edit_type_str}" if edit_type_str else ""
         ax_hdr.text(
             0.0, 0.5,
-            f"  ▶  {ex['magnitude_label'].upper()} degradation  "
-            f"│  stimulus: {ex['stimulus_id']}  │  magnitude = {mag_str}",
+            f"  ▶  {tag_str}{ex['magnitude_label'].upper()} degradation"
+            f"  │  stimulus: {ex['stimulus_id']}"
+            f"  │  magnitude = {mag_str}{et_str}",
             transform=ax_hdr.transAxes, fontsize=8.5, fontweight="bold",
-            va="center", color="#222222",
-            bbox=dict(facecolor="#e8e8e8", edgecolor="none", boxstyle="square,pad=0.3"),
+            va="center", color=hdr_fg,
+            bbox=dict(facecolor=hdr_bg, edgecolor="none", boxstyle="square,pad=0.3"),
         )
 
         # Content: 3 images + score panel
@@ -659,7 +764,7 @@ def plot_exp_gap(
     exp2_score: str = "overall_quality",
     figsize: tuple[float, float] = (8, 5),
     manifest_dir: Path | None = None,
-    n_examples: int = 10,
+    n_secondary: int = 5,
 ) -> plt.Figure:
     """Plot Exp1 vs Exp2 scores for the same stimuli, grouped by magnitude.
 
@@ -669,9 +774,11 @@ def plot_exp_gap(
     The gap between the curves quantifies how much harder judging is vs
     simply detecting a difference.
 
-    When ``manifest_dir`` is given, example stimuli are appended below the
-    curve (default 10), always including at least one from each key scale
-    (low / medium / high magnitude), with the rest randomly sampled.
+    When ``manifest_dir`` is given, example stimuli are shown below the curve.
+    All *in-dimension* samples (edit type matches the degradation dimension,
+    one per unique magnitude level) are always included, followed by up to
+    ``n_secondary`` randomly stratified *secondary* samples from other edit
+    types for the same degradation dimension.
     """
     from matplotlib import gridspec as mgridspec
 
@@ -687,7 +794,7 @@ def plot_exp_gap(
     if manifest_dir is not None:
         manifest_dir = Path(manifest_dir)
         manifest_index = _load_manifest_index(manifest_dir)
-        examples = _pick_example_stimuli(df, dimension, vlm, manifest_index, n=n_examples)
+        examples = _pick_example_stimuli(df, dimension, vlm, manifest_index, n_secondary=n_secondary)
 
     no_data = exp1.empty and exp2.empty
 

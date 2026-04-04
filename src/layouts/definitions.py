@@ -979,6 +979,10 @@ LAYOUT_SETS.update({
     ("scale", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
     ("scale", "medium"): ["corner_badge",  "name_card",      "title_byline"],
 
+    # Rotation (rotate element by N degrees): 3 easy + 1 medium (image-bg adds visual noise)
+    ("rotation", "easy"):   ["solo_headline", "gradient_headline", "pattern_headline"],
+    ("rotation", "medium"): ["image_bg_headline"],
+
     # Relocation (alignment position change): 3 easy (9-position grid) + 1 medium (3-position byline)
     ("relocation", "easy"):   ["solo_headline", "gradient_headline", "pattern_headline"],
     ("relocation", "medium"): ["title_byline"],

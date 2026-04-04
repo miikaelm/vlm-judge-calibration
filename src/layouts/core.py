@@ -189,8 +189,15 @@ def _role_css(s: dict) -> str:
     if opacity is not None:
         parts.append(f"opacity:{opacity}")
     rot = s.get("rotation_deg", 0.0)
+    pos_x = s.get("position_offset_x", 0)
+    pos_y = s.get("position_offset_y", 0)
+    transforms = []
     if rot:
-        parts.append(f"transform:rotate({rot:.1f}deg)")
+        transforms.append(f"rotate({rot:.1f}deg)")
+    if pos_x or pos_y:
+        transforms.append(f"translate({pos_x}px, {pos_y}px)")
+    if transforms:
+        parts.append(f"transform:{' '.join(transforms)}")
     text_shadow = s.get("text_shadow")
     if text_shadow:
         parts.append(f"text-shadow:{text_shadow}")
