@@ -41,6 +41,9 @@ PRICING: dict[str, dict[str, float]] = {
     "gemini-1.5-pro":     {"input": 3.50,  "output": 10.50},
     "gemini-1.5-flash":   {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash":   {"input": 0.10,  "output": 0.40},
+    "gemini-2.5-pro":     {"input": 1.25,  "output": 10.00},  # verify at ai.google.dev
+    # Gemini 3.1 Pro Preview — prompts <=200k tokens (our use case)
+    "gemini-3.1-pro":     {"input": 2.00,  "output": 12.00},
 }
 
 DEFAULT_LOG_PATH = Path(__file__).parent / "api_usage_log.csv"

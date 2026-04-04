@@ -4,20 +4,20 @@ runner.py — Evaluation runner: iterate a stimulus manifest, call the VLM, writ
 Results are appended immediately after each call (crash-safe).
 
 Usage:
-    # Print planned calls, estimate cost, no API calls:
-    python src/evaluation/runner.py --manifest data/pilot/ --model gpt-4o --dry-run
+    # Print planned calls, estimate cost for all models, no API calls:
+    python src/evaluation/runner.py --manifest data/generated/ --model gpt-4o --dry-run
 
     # Run with real GPT-4o (requires OPENAI_API_KEY env var):
-    python src/evaluation/runner.py --manifest data/pilot/ --model gpt-4o
+    python src/evaluation/runner.py --manifest data/generated/ --model gpt-4o
 
     # Run Experiment 1 (perceptual sensitivity) with fake API:
-    python src/evaluation/runner.py --manifest data/pilot/ --model dummy --experiment 1
+    python src/evaluation/runner.py --manifest data/generated/ --model dummy --experiment 1
 
     # Run Experiment 2 (instruction-following) with fake API:
-    python src/evaluation/runner.py --manifest data/pilot/ --model dummy --experiment 2
+    python src/evaluation/runner.py --manifest data/generated/ --model dummy --experiment 2
 
     # Run only first 5 stimuli:
-    python src/evaluation/runner.py --manifest data/pilot/ --model dummy --limit 5
+    python src/evaluation/runner.py --manifest data/generated/ --model dummy --limit 5
 """
 
 from __future__ import annotations
@@ -36,26 +36,43 @@ from src.evaluation.parser import log_parse_failure
 DEFAULT_RESULTS_PATH = Path("data/results.jsonl")
 DEFAULT_PARSE_FAILURES_PATH = Path("data/parse_failures.jsonl")
 
-# Rough token estimates per stimulus call (for dry-run cost projection)
-# 512×512 PNG at "high" detail ≈ 765 tokens/image × 2 images
-_EST_IMAGE_TOKENS = 765 * 2
+# Token estimates per stimulus call (for dry-run cost projection)
+# GPT-4o high detail: 512×512 is scaled UP so shortest side = 768px → 768×768
+# → 2×2 tile grid = 4 tiles × 170 + 85 base = 765 tokens/image × 2 images
+# Gemini 3.1 Pro: images billed at ~258 tokens each (standard resolution) × 2
+_EST_IMAGE_TOKENS_GPT = 765 * 2
+_EST_IMAGE_TOKENS_GEMINI = 258 * 2
 _EST_TEXT_TOKENS = 300   # system + user prompt text
 _EST_OUTPUT_TOKENS = 120  # JSON response
 
+# USD→EUR exchange rate (update as needed)
+_USD_TO_EUR = 0.92
 
-def _find_stimulus_dirs(manifest_dir: Path) -> list[Path]:
-    """Return all subdirectories containing a metadata.json, sorted by name."""
-    return sorted(
-        d for d in manifest_dir.iterdir()
-        if d.is_dir() and (d / "metadata.json").exists()
-    )
+# Models to compare in dry-run cost summary
+_DRY_RUN_COMPARE_MODELS = ["gpt-4o", "gemini-3.1-pro"]
+
+
+def _load_manifest(manifest_dir: Path) -> list[dict]:
+    """Read manifest.jsonl from manifest_dir and return list of entry dicts."""
+    manifest_path = manifest_dir / "manifest.jsonl"
+    entries = []
+    with open(manifest_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return entries
+
+
+def _est_image_tokens(model: str) -> int:
+    return _EST_IMAGE_TOKENS_GEMINI if model.startswith("gemini") else _EST_IMAGE_TOKENS_GPT
 
 
 def _estimate_cost(model: str, n: int) -> float:
     prices = PRICING.get(model)
     if not prices:
         return 0.0
-    input_tokens = (_EST_IMAGE_TOKENS + _EST_TEXT_TOKENS) * n
+    input_tokens = (_est_image_tokens(model) + _EST_TEXT_TOKENS) * n
     output_tokens = _EST_OUTPUT_TOKENS * n
     return (input_tokens * prices["input"] + output_tokens * prices["output"]) / 1_000_000
 
@@ -109,26 +126,42 @@ def run_evaluation(
     limit: int | None = None,
 ) -> None:
     manifest_dir = Path(manifest_dir)
-    stimulus_dirs = _find_stimulus_dirs(manifest_dir)
+    entries = _load_manifest(manifest_dir)
     if limit is not None:
-        stimulus_dirs = stimulus_dirs[:limit]
+        entries = entries[:limit]
 
-    n = len(stimulus_dirs)
-    print(f"[runner] Found {n} stimuli in {manifest_dir}")
+    n = len(entries)
+    print(f"[runner] Found {n} stimuli in {manifest_dir / 'manifest.jsonl'}")
 
     if dry_run:
-        est_cost = _estimate_cost(model, n)
         print(
             f"[runner] DRY RUN — {n} planned calls | "
-            f"model={model} | prompt={prompt_variant} | "
-            f"est. cost=${est_cost:.4f}"
+            f"prompt={prompt_variant}"
         )
-        for i, d in enumerate(stimulus_dirs, 1):
-            meta = json.loads((d / "metadata.json").read_text(encoding="utf-8"))
+        print()
+        # Cost summary for comparison models
+        for m in _DRY_RUN_COMPARE_MODELS:
+            usd = _estimate_cost(m, n)
+            eur = usd * _USD_TO_EUR
+            img_tok = _est_image_tokens(m)
+            input_tok = (img_tok + _EST_TEXT_TOKENS) * n
+            output_tok = _EST_OUTPUT_TOKENS * n
+            total_tok = input_tok + output_tok
+            prices = PRICING.get(m, {})
+            price_note = (
+                f"${prices.get('input', '?')}/M in + ${prices.get('output', '?')}/M out"
+                if prices else "no pricing data"
+            )
             print(
-                f"  [{i:03d}] {meta['stimulus_id']} | "
-                f"edit={meta['edit_type']} | "
-                f"deg={meta['degradation']['dimension']}:{meta['degradation']['magnitude']}"
+                f"  {m:<20} {total_tok:>9,} tokens  "
+                f"~ ${usd:.2f} USD  /  ~EUR {eur:.2f}    ({price_note})"
+            )
+        print()
+        for i, entry in enumerate(entries, 1):
+            print(
+                f"  [{i:03d}] {entry['id']} | "
+                f"edit={entry['edit_type']} | "
+                f"deg={entry['degradation']['dimension']}:{entry['degradation']['magnitude']}"
             )
         return
 
@@ -140,13 +173,12 @@ def run_evaluation(
     n_success = 0
     n_fail = 0
 
-    for i, stimulus_dir in enumerate(stimulus_dirs, 1):
-        meta = json.loads((stimulus_dir / "metadata.json").read_text(encoding="utf-8"))
-        stimulus_id = meta["stimulus_id"]
+    for i, entry in enumerate(entries, 1):
+        stimulus_id = entry["id"]
         print(f"[runner] [{i}/{n}] {stimulus_id} ...", end=" ", flush=True)
 
         try:
-            result = run_judge(stimulus_dir, config, client)
+            result = run_judge(entry, manifest_dir, config, client)
         except Exception as e:
             print(f"ERROR: {e}")
             n_fail += 1
@@ -187,7 +219,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="VLM evaluation runner")
     parser.add_argument(
         "--manifest", required=True, type=Path,
-        help="Directory containing stimulus subdirectories (each with metadata.json)",
+        help="Directory containing manifest.jsonl and images/ folder (e.g. data/generated/)",
     )
     parser.add_argument(
         "--model", default="gpt-4o",

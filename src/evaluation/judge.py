@@ -74,9 +74,17 @@ def _clamp_score(val: Any) -> int | None:
     return None
 
 
-def run_judge(stimulus_dir: Path, config: JudgeConfig, client: Any) -> JudgeResult:
+def run_judge(
+    manifest_entry: dict,
+    manifest_dir: Path,
+    config: JudgeConfig,
+    client: Any,
+) -> JudgeResult:
     """
-    Load a stimulus directory, call the VLM, and return a JudgeResult.
+    Load a stimulus from the manifest entry, call the VLM, and return a JudgeResult.
+
+    manifest_entry is a dict from manifest.jsonl.
+    manifest_dir is the root directory that contains the images/ folder.
 
     client must expose .chat.completions.create() — use TrackedOpenAI for real
     API calls or DummyOpenAI for zero-cost smoke testing.
@@ -86,24 +94,22 @@ def run_judge(stimulus_dir: Path, config: JudgeConfig, client: Any) -> JudgeResu
     """
     from src.evaluation.parser import parse_response
 
-    stimulus_dir = Path(stimulus_dir)
-    metadata = json.loads((stimulus_dir / "metadata.json").read_text(encoding="utf-8"))
+    manifest_dir = Path(manifest_dir)
 
-    stimulus_id = metadata["stimulus_id"]
-    instruction = metadata["edit_instruction"]
-    files = metadata["files"]
+    stimulus_id = manifest_entry["id"]
+    instruction = manifest_entry["edit_instruction"]
 
     prompt = _load_prompt(config.prompts_path, config.prompt_variant)
     system_msg = prompt["system"].strip()
 
     if config.prompt_variant == "experiment_2":
         user_text = prompt["user_template"].replace("{instruction}", instruction)
-        img1_path = stimulus_dir / files["source"]
-        img2_path = stimulus_dir / files["degraded"]
+        img1_path = manifest_dir / manifest_entry["source_image"]
+        img2_path = manifest_dir / manifest_entry["degraded_image"]
     elif config.prompt_variant == "experiment_1":
         user_text = prompt["user_template"]
-        img1_path = stimulus_dir / files["ground_truth"]
-        img2_path = stimulus_dir / files["degraded"]
+        img1_path = manifest_dir / manifest_entry["ground_truth_image"]
+        img2_path = manifest_dir / manifest_entry["degraded_image"]
     else:
         raise ValueError(f"Unknown prompt_variant: {config.prompt_variant!r}")
 
