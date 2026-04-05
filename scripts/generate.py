@@ -43,6 +43,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 
 from render import Renderer, RenderConfig
+from degradation.specs import resolve_jitter
 from layouts import (
     LayoutDefinition,
     all_layouts,
@@ -50,6 +51,20 @@ from layouts import (
     get_layouts_for_edit_difficulty,
     get_layouts_for_edit_all_difficulties,
 )
+
+
+# ---------------------------------------------------------------------------
+# Jitter helpers
+# ---------------------------------------------------------------------------
+
+def _param_nominal(params: dict, key: str):
+    """Return a representative scalar for key, using midpoint of min_/max_ range if present."""
+    if key in params:
+        return params[key]
+    min_key, max_key = f"min_{key}", f"max_{key}"
+    if min_key in params and max_key in params:
+        return (params[min_key] + params[max_key]) / 2
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -228,26 +243,24 @@ def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
         if dim in _BIDIRECTIONAL_DIMS:
             param_key = _BIDIRECTIONAL_DIMS[dim]
             pos_list = sorted(
-                [c for c in candidates if c["params"].get(param_key, 0) > 0],
-                key=lambda c: c["params"][param_key],
+                [c for c in candidates if _param_nominal(c["params"], param_key) > 0],
+                key=lambda c: _param_nominal(c["params"], param_key),
             )
             neg_list = sorted(
-                [c for c in candidates if c["params"].get(param_key, 0) < 0],
-                key=lambda c: -c["params"][param_key],  # ascending magnitude (−1 before −10)
+                [c for c in candidates if _param_nominal(c["params"], param_key) < 0],
+                key=lambda c: -_param_nominal(c["params"], param_key),  # ascending magnitude
             )
             result[dim] = {"positive": pos_list, "negative": neg_list}
         elif dim == "position_offset":
             # Split by direction so each stimulus can randomly pick one direction via RNG.
-            # Using a single "all" bucket caused _pick_tiny_moderate_large to always return
-            # the same 3 configs (indices 0, n//2, n-1) regardless of layout or seed.
-            right = sorted([c for c in candidates if c["params"].get("offset_x_px", 0) > 0],
-                           key=lambda c: c["params"]["offset_x_px"])
-            left  = sorted([c for c in candidates if c["params"].get("offset_x_px", 0) < 0],
-                           key=lambda c: -c["params"]["offset_x_px"])
-            down  = sorted([c for c in candidates if c["params"].get("offset_y_px", 0) > 0],
-                           key=lambda c: c["params"]["offset_y_px"])
-            up    = sorted([c for c in candidates if c["params"].get("offset_y_px", 0) < 0],
-                           key=lambda c: -c["params"]["offset_y_px"])
+            right = sorted([c for c in candidates if _param_nominal(c["params"], "offset_x_px") > 0],
+                           key=lambda c: _param_nominal(c["params"], "offset_x_px"))
+            left  = sorted([c for c in candidates if _param_nominal(c["params"], "offset_x_px") < 0],
+                           key=lambda c: -_param_nominal(c["params"], "offset_x_px"))
+            down  = sorted([c for c in candidates if _param_nominal(c["params"], "offset_y_px") > 0],
+                           key=lambda c: _param_nominal(c["params"], "offset_y_px"))
+            up    = sorted([c for c in candidates if _param_nominal(c["params"], "offset_y_px") < 0],
+                           key=lambda c: -_param_nominal(c["params"], "offset_y_px"))
             result[dim] = {k: v for k, v in
                            [("right", right), ("left", left), ("down", down), ("up", up)] if v}
         else:
@@ -302,7 +315,7 @@ def _apply_secondary_degs_to_styles(
     base_size = styles[role].get("font_size_px", 36)
     for deg in secondary_degs:
         dim = deg["dimension"]
-        params = deg["params"]
+        params = resolve_jitter(deg["params"])
         if dim == "scale_error":
             error_pct = params["scale_error_pct"]
             new_size = max(12, min(200, round(base_size * (1 + error_pct / 100))))
@@ -452,7 +465,7 @@ def _color_manifest(
         # 1. Primary spec: color_offset only — no secondary degradations
         color_degradations = []
         for deg in color_degs:
-            delta_l = deg["params"]["delta_e"]
+            delta_l = _param_nominal(deg["params"], "delta_e")
             degraded_color = _shift_color_lab(target_color, delta_l)
             color_degradations.append({
                 "id": deg["id"],
@@ -533,7 +546,7 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
         # 1. Primary spec: scale_error only
         degradations = []
         for deg in scale_degs:
-            error_pct = deg["params"]["scale_error_pct"]
+            error_pct = _param_nominal(deg["params"], "scale_error_pct")
             degraded_size = max(12, min(200, int(round(target_size * (1 + error_pct / 100)))))
             degradations.append({
                 "id": deg["id"],
@@ -910,8 +923,8 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
 
         # Wrong letter-spacings: all ls configs except target, sorted by distance from target.
         wrong_degs = sorted(
-            [d for d in ls_degs if d["params"]["letter_spacing_px"] != target_px],
-            key=lambda d: abs(d["params"]["letter_spacing_px"] - target_px),
+            [d for d in ls_degs if _param_nominal(d["params"], "letter_spacing_px") != target_px],
+            key=lambda d: abs(_param_nominal(d["params"], "letter_spacing_px") - target_px),
         )
         three_levels = _pick_tiny_moderate_large(wrong_degs)
         if not three_levels:
@@ -919,7 +932,7 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
 
         primary_degs = []
         for deg in three_levels:
-            wrong_px = deg["params"]["letter_spacing_px"]
+            wrong_px = _param_nominal(deg["params"], "letter_spacing_px")
             primary_degs.append({
                 "id": deg["id"],
                 "magnitude": deg["magnitude"],
@@ -999,7 +1012,7 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
         # 1. Primary spec: rotation_error only
         degradations = []
         for deg in rot_degs:
-            error_deg = deg["params"]["angle_deg"]
+            error_deg = _param_nominal(deg["params"], "angle_deg")
             degradations.append({
                 "id": deg["id"],
                 "magnitude": deg["magnitude"],

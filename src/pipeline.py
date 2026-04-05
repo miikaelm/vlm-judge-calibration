@@ -17,7 +17,7 @@ from src.render import Renderer, RenderConfig
 from src.templates.templates import Template, get_template
 from src.edit_applicator import apply_correct_edit
 from src.degradation.engine import apply_degradation
-from src.degradation.specs import DegradationSpec
+from src.degradation.specs import DegradationSpec, resolve_jitter
 
 
 @dataclass
@@ -74,6 +74,10 @@ async def generate_stimulus_async(
     if deg_spec.dimension == "scale_error" and edit_spec.edit_type == "scale_change":
         if "base_font_size_px" not in deg_spec.params:
             deg_spec.params["base_font_size_px"] = edit_spec.edit_params.get("new_font_size_px", 36)
+
+    # Resolve any jitter ranges (min_X / max_X → sampled scalar) so metadata
+    # records the actual values used, not the range bounds.
+    deg_spec.params = resolve_jitter(deg_spec.params)
 
     if deg_spec.layer == "image":
         # Image-layer degradations: render ground_truth HTML as base, apply pixel ops after

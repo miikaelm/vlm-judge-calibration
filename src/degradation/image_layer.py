@@ -64,6 +64,6 @@ def apply_image_degradation(image_path: Path, spec: DegradationSpec, output_path
     if spec.dimension == "gaussian_noise":
         apply_gaussian_noise(image_path, spec.params["sigma"], output_path)
     elif spec.dimension == "jpeg_compression":
-        apply_jpeg_compression(image_path, spec.params["quality"], output_path)
+        apply_jpeg_compression(image_path, int(round(spec.params["quality"])), output_path)
     elif spec.dimension == "blur":
         apply_blur(image_path, spec.params["radius"], output_path)

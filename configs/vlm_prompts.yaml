@@ -16,31 +16,34 @@ prompts:
 
       Rate the result on each dimension using a 1–5 integer scale:
 
-        instruction_following — did the result follow the edit instruction?
-          1 = completely ignored  5 = perfectly executed
+        instruction_following — did the result perform exactly the requested operation with no extra unintended changes?
+          1 = wrong operation or not executed  5 = exactly performed, nothing more
 
-        text_accuracy — is the text content correct and readable?
+        text_accuracy — is the text content correct in wording, spelling, and case?
           1 = wrong or missing    5 = exact and correct
 
-        visual_consistency — does the result look visually coherent?
-          1 = jarring or broken   5 = visually coherent
+        visual_consistency — do the edited elements visually integrate with the surrounding image?
+          Consider: font style/weight/size match, color blending, alignment, anti-aliasing, halos, artefacts.
+          5 = perfect integration: matching font, size, color, alignment; no visible artefacts
+          4 = very good integration with only a tiny mismatch
+          3 = visible mismatch (slight halo, mild misalignment, style drift)
+          2 = obvious halo, style mismatch, or blurring
+          1 = pasted-on appearance, clearly misaligned, or severely artefacted
 
-        layout_preservation — is the overall layout preserved (unchanged elements stayed the same)?
-          1 = layout severely changed  5 = layout fully preserved
+        layout_preservation — did all non-target areas of the image remain unchanged?
+          1 = large portions changed unnecessarily  5 = non-target areas fully preserved
 
         overall_quality — holistic quality of the editing result?
           1 = unusable  5 = excellent
 
-      Also note any errors or visual artifacts in "errors_noticed" (empty string if none).
-
       Return ONLY this exact JSON object:
       {
+        "errors_noticed": "<note any errors, artefacts, or issues you observe — empty string if none>",
         "instruction_following": <integer 1-5>,
         "text_accuracy": <integer 1-5>,
         "visual_consistency": <integer 1-5>,
         "layout_preservation": <integer 1-5>,
-        "overall_quality": <integer 1-5>,
-        "errors_noticed": "<free text or empty string>"
+        "overall_quality": <integer 1-5>
       }
     notes: "Experiment 2: instruction-following evaluation. Inputs: source image + edit instruction + degraded result image."
     model_hint: "gpt-4o"

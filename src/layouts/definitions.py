@@ -860,11 +860,11 @@ register(LayoutDefinition(
         },
     },
     default_content={"headline": "Sample Heading"},
-    background="linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    background="linear-gradient(135deg, #0f172a 0%, #1e40af 100%)",
     background_type="gradient",
-    effective_bg_color="#764ba2",  # deep-purple end of gradient — worst case for contrast
+    effective_bg_color="#1e40af",  # blue end — worst case for contrast
     html_builder=_build_solo_headline,
-    notes="White headline on purple-blue gradient. Easy tier. Tests color against gradient bg.",
+    notes="White headline on deep navy-to-blue gradient. Easy tier. Tests color against gradient bg.",
 ))
 
 
@@ -963,14 +963,14 @@ register(LayoutDefinition(
     },
     default_content={"headline": "Sample Heading"},
     background=(
-        "linear-gradient(rgba(17,201,111,0.29), rgba(17,201,111,0.29)), "
+        "linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0.55)), "
         "url('https://picsum.photos/seed/2250/800/600') center/cover"
     ),
     background_type="image",
-    effective_bg_color="#11C96F",  # green tint overlay color — filters out similar greens
+    effective_bg_color="#2a2a2a",  # dark overlay — filters out dark text colors
     html_builder=_build_solo_headline,
     notes=(
-        "White headline (with shadow) on real photo (picsum seed 2250) with green tint overlay. "
+        "White headline (with shadow) on real photo (picsum seed 2250) with subtle dark vignette overlay. "
         "Medium tier. Tests color perception against a photographic background."
     ),
 ))
