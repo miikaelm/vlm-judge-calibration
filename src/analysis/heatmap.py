@@ -370,3 +370,140 @@ def plot_perfect_score_heatmap(
     ax.set_ylabel("Edit type", fontsize=9)
     fig.tight_layout()
     return fig
+
+
+def plot_noop_detection_heatmap(
+    df: pd.DataFrame,
+    vlm: str,
+    *,
+    experiment: str = "experiment_1",
+    figsize: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Bar chart of Exp1 false positive rate on noop (unchanged image) stimuli.
+
+    The model is asked whether there is a difference between source and source
+    (identical images).  A high bar = the model hallucinates a difference even
+    when nothing changed at all.  Results are grouped by edit type to show
+    whether hallucination is instruction-driven.
+    """
+    sub = df[
+        (df["model"] == vlm)
+        & (df["experiment"] == experiment)
+        & df["parse_success"]
+        & df["detected_difference"].notna()
+    ].copy()
+    sub["detected"] = sub["detected_difference"].astype(bool).astype(float)
+
+    edit_types = _present_edit_types(sub, _EDIT_TYPE_ORDER)
+
+    if sub.empty:
+        fig, ax = plt.subplots(figsize=figsize or (6, 4))
+        ax.text(0.5, 0.5, "No noop Exp1 data",
+                ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(f"Exp1 false positive rate (noop) — model: {vlm}")
+        return fig
+
+    fp_rates = [sub[sub["edit_type"] == et]["detected"].mean() for et in edit_types]
+    ns = [int((sub["edit_type"] == et).sum()) for et in edit_types]
+
+    if figsize is None:
+        figsize = (max(5, len(edit_types) * 1.4), 4)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    colors = ["#d73027" if v > 0.2 else "#fee08b" if v > 0.05 else "#1a9850"
+              for v in fp_rates]
+    bars = ax.bar(range(len(edit_types)), fp_rates, color=colors, edgecolor="white", linewidth=0.8)
+
+    for bar, val, n in zip(bars, fp_rates, ns):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                f"{val:.0%}\n(n={n})", ha="center", va="bottom", fontsize=8)
+
+    ax.set_xticks(range(len(edit_types)))
+    ax.set_xticklabels([e.replace("_", " ") for e in edit_types], fontsize=9)
+    ax.set_ylim(0, 1.15)
+    ax.set_ylabel("False positive rate", fontsize=9)
+    ax.axhline(0.0, color="black", linewidth=0.5)
+    ax.set_title(
+        f"Exp1 false positive rate on noop (image unchanged) — model: {vlm}\n"
+        f"(fraction of identical-image stimuli incorrectly flagged as different)",
+        fontsize=10,
+    )
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def plot_noop_score_heatmap(
+    df: pd.DataFrame,
+    vlm: str,
+    *,
+    experiment: str = "experiment_2",
+    figsize: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Heatmap of Exp2 scores on noop (unchanged image) stimuli.
+
+    Rows = edit types, columns = score dimensions.
+    Since no edit was applied, a well-calibrated model should score low.
+    High scores (now shown in red) reveal the model accepts an unapplied edit.
+    """
+    score_cols = [c for c in _EXP2_SCORE_COLS if c in df.columns]
+    sub = df[
+        (df["model"] == vlm)
+        & (df["experiment"] == experiment)
+        & df["parse_success"]
+    ].copy()
+    sub = sub[sub[score_cols].notna().any(axis=1)]
+
+    edit_types = _present_edit_types(sub, _EDIT_TYPE_ORDER)
+
+    if sub.empty:
+        fig, ax = plt.subplots(figsize=figsize or (8, 4))
+        ax.text(0.5, 0.5, "No noop Exp2 data",
+                ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(f"Exp2 noop scores — model: {vlm}")
+        return fig
+
+    n_cols = len(score_cols)
+    n_rows = len(edit_types)
+    matrix = np.full((n_rows, n_cols), np.nan)
+    for i, et in enumerate(edit_types):
+        et_sub = sub[sub["edit_type"] == et]
+        for j, col in enumerate(score_cols):
+            vals = et_sub[col].dropna()
+            if not vals.empty:
+                matrix[i, j] = vals.mean()
+
+    if figsize is None:
+        figsize = (max(6, n_cols * 1.5), max(3, n_rows * 0.9))
+
+    fig, ax = plt.subplots(figsize=figsize)
+    # Reversed colormap: low score = green (correct for noop), high score = red (model was fooled)
+    im = ax.imshow(matrix, cmap="RdYlGn_r", vmin=1, vmax=5, aspect="auto")
+
+    ax.set_xticks(range(n_cols))
+    ax.set_xticklabels([c.replace("_", "\n") for c in score_cols], fontsize=9)
+    ax.set_yticks(range(n_rows))
+    ax.set_yticklabels([e.replace("_", " ") for e in edit_types], fontsize=9)
+
+    for i in range(n_rows):
+        for j in range(n_cols):
+            val = matrix[i, j]
+            if not np.isnan(val):
+                text_color = "white" if val > 3.5 or val < 1.5 else "black"
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                        fontsize=8, color=text_color, fontweight="bold")
+            else:
+                ax.text(j, i, "—", ha="center", va="center", fontsize=8, color="gray")
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+    cbar.set_label("Mean score (ideal for noop = 1)", fontsize=9)
+
+    ax.set_title(
+        f"Exp2 scores on noop stimuli (image unchanged) — model: {vlm}\n"
+        f"(ideal = 1 everywhere; yellow/red = model accepts unapplied edit)",
+        fontsize=10,
+    )
+    ax.set_xlabel("Score dimension", fontsize=9)
+    ax.set_ylabel("Edit type", fontsize=9)
+    fig.tight_layout()
+    return fig

@@ -32,12 +32,14 @@ import matplotlib.pyplot as plt
 _repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_repo_root / "src"))
 
-from analysis.curves import load_results, plot_sensitivity_curve, plot_exp_gap
+from analysis.curves import load_results, load_noop_results, plot_sensitivity_curve, plot_exp_gap
 from analysis.heatmap import (
     plot_detection_heatmap,
     plot_score_heatmap,
     plot_perfect_detection_heatmap,
     plot_perfect_score_heatmap,
+    plot_noop_detection_heatmap,
+    plot_noop_score_heatmap,
 )
 
 
@@ -98,6 +100,22 @@ def _load_combined(
     return pd.concat(frames, ignore_index=True)
 
 
+def _load_noop_combined(
+    results_exp1: Path | None,
+    results_exp2: Path | None,
+    manifest_dir: Path,
+):
+    import pandas as pd
+    frames = []
+    if results_exp1 is not None:
+        frames.append(load_noop_results(results_exp1, manifest_dir))
+    if results_exp2 is not None:
+        frames.append(load_noop_results(results_exp2, manifest_dir))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def run_analysis(
     results_exp1: Path | None,
     results_exp2: Path | None,
@@ -114,8 +132,11 @@ def run_analysis(
     sources = [p for p in (results_exp1, results_exp2) if p is not None]
     print(f"Loading results from: {', '.join(str(p) for p in sources)} ...")
     df = _load_combined(results_exp1, results_exp2, manifest_dir)
+    noop_df = _load_noop_combined(results_exp1, results_exp2, manifest_dir)
     print(f"  {len(df)} records loaded ({df['stimulus_id'].nunique()} stimuli, "
           f"{df['model'].nunique()} model(s))")
+    if not noop_df.empty:
+        print(f"  {len(noop_df)} noop records loaded")
 
     if df.empty:
         print("ERROR: no data — nothing to plot.")
@@ -130,6 +151,8 @@ def run_analysis(
     # functions see the name the user provided — no path inference.
     if model_name:
         df["model"] = model_name
+        if not noop_df.empty:
+            noop_df["model"] = model_name
         vlms = [model_name]
     else:
         vlms = sorted(df["model"].unique())
@@ -206,6 +229,24 @@ def run_analysis(
             print(f"[{vlm}] Perfect-edit score heatmap (Exp2) ...")
             fig = plot_perfect_score_heatmap(df, vlm)
             save_fig(fig, vdir / "heatmaps" / "perfect_scores.png")
+
+        # ------------------------------------------------------------------
+        # 6. Noop heatmaps (image unchanged)
+        # ------------------------------------------------------------------
+        if not noop_df.empty:
+            noop_has_exp1 = "experiment_1" in noop_df["experiment"].values
+            noop_has_exp2 = "experiment_2" in noop_df["experiment"].values
+            noop_vlm = noop_df[noop_df["model"] == vlm]
+
+            if noop_has_exp1 and not noop_vlm[noop_vlm["experiment"] == "experiment_1"].empty:
+                print(f"[{vlm}] Noop false positive heatmap (Exp1) ...")
+                fig = plot_noop_detection_heatmap(noop_vlm, vlm)
+                save_fig(fig, vdir / "heatmaps" / "noop_false_positive_rate.png")
+
+            if noop_has_exp2 and not noop_vlm[noop_vlm["experiment"] == "experiment_2"].empty:
+                print(f"[{vlm}] Noop score heatmap (Exp2) ...")
+                fig = plot_noop_score_heatmap(noop_vlm, vlm)
+                save_fig(fig, vdir / "heatmaps" / "noop_scores.png")
 
     # ------------------------------------------------------------------
     # 6. Cross-model comparison heatmaps (if multiple models, Exp2 needed)

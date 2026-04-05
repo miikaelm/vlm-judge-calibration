@@ -36,7 +36,7 @@ _repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_repo_root / "src"))
 
 import pandas as pd
-from analysis.curves import load_results
+from analysis.curves import load_results, load_noop_results
 from analysis.stats import compute_all_stats, print_report, save_report
 
 
@@ -64,23 +64,32 @@ def main() -> None:
         parser.error("supply at least one of --results-exp1 / --results-exp2")
 
     frames: list[pd.DataFrame] = []
+    noop_frames: list[pd.DataFrame] = []
     manifest_dir = args.manifest.resolve()
 
     if args.results_exp1 is not None:
         print(f"Loading Exp1: {args.results_exp1}")
         frames.append(load_results(args.results_exp1.resolve(), manifest_dir))
+        noop_frames.append(load_noop_results(args.results_exp1.resolve(), manifest_dir))
 
     if args.results_exp2 is not None:
         print(f"Loading Exp2: {args.results_exp2}")
         frames.append(load_results(args.results_exp2.resolve(), manifest_dir))
+        noop_frames.append(load_noop_results(args.results_exp2.resolve(), manifest_dir))
 
     df = pd.concat(frames, ignore_index=True)
-    print(f"  {len(df)} records loaded ({df['stimulus_id'].nunique()} stimuli)\n")
+    noop_df = pd.concat(noop_frames, ignore_index=True) if noop_frames else pd.DataFrame()
+    print(f"  {len(df)} records loaded ({df['stimulus_id'].nunique()} stimuli)")
+    if not noop_df.empty:
+        print(f"  {len(noop_df)} noop records loaded ({noop_df['stimulus_id'].nunique()} noop stimuli)")
+    print()
 
     if args.model_name:
         df["model"] = args.model_name
+        if not noop_df.empty:
+            noop_df["model"] = args.model_name
 
-    stats = compute_all_stats(df)
+    stats = compute_all_stats(df, noop_df=noop_df if not noop_df.empty else None)
     print_report(stats)
 
     if not args.no_save:

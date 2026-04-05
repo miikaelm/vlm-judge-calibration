@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter
 
-from src.degradation.specs import DegradationSpec
+from degradation.specs import DegradationSpec
 
 
 def apply_gaussian_noise(image_path: Path, sigma: float, output_path: Path) -> None:

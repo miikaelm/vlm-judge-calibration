@@ -121,33 +121,14 @@ def _x_label(dimension: str) -> str:
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_results(
+def _load_raw_results(
     results_jsonl: str | Path,
     manifest_dir: str | Path,
 ) -> pd.DataFrame:
-    """Load results.jsonl and join with per-stimulus metadata.
-
-    Parameters
-    ----------
-    results_jsonl:
-        Path to the JSONL file produced by runner.py.
-    manifest_dir:
-        Directory containing stimulus sub-directories each with metadata.json
-        (e.g. ``data/full/``).
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per result record, enriched with metadata columns:
-        edit_type, edit_id, template_id, difficulty_tier,
-        degradation_dimension, degradation_magnitude, degradation_layer,
-        degradation_params, numeric_magnitude, model, experiment,
-        parse_success, plus all score columns.
-    """
+    """Internal: load and join results + manifest without any row filtering."""
     results_jsonl = Path(results_jsonl)
     manifest_dir = Path(manifest_dir)
 
-    # -- Load results
     records: list[dict] = []
     with open(results_jsonl, encoding="utf-8") as f:
         for line in f:
@@ -158,7 +139,6 @@ def load_results(
                 except json.JSONDecodeError:
                     pass
 
-    # -- Load metadata index
     meta: dict[str, dict] = {}
     if manifest_dir.exists():
         manifest_file = manifest_dir / "manifest.jsonl"
@@ -181,7 +161,6 @@ def load_results(
                     m = json.loads(mpath.read_text(encoding="utf-8"))
                     meta[m["stimulus_id"]] = m
 
-    # -- Join
     rows = []
     for r in records:
         sid = r.get("stimulus_id", "")
@@ -196,7 +175,6 @@ def load_results(
             "model": r.get("model", "unknown"),
             "experiment": r.get("experiment", ""),
             "parse_success": r.get("parse_success", True),
-            # metadata
             "edit_type": m.get("edit_type", "unknown"),
             "edit_id": m.get("edit_id", "unknown"),
             "template_id": tmpl.get("template_id", "unknown"),
@@ -206,11 +184,9 @@ def load_results(
             "degradation_layer": deg.get("layer", "unknown"),
             "degradation_params": params,
             "numeric_magnitude": _params_to_numeric_magnitude(dimension, params),
-            # Exp1 scores
             "detected_difference": r.get("detected_difference"),
             "similarity_score": r.get("similarity_score"),
             "exp1_description": r.get("description"),
-            # Exp2 scores
             "instruction_following": r.get("instruction_following"),
             "text_accuracy": r.get("text_accuracy"),
             "visual_consistency": r.get("visual_consistency"),
@@ -220,8 +196,43 @@ def load_results(
         }
         rows.append(row)
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
+
+
+def load_results(
+    results_jsonl: str | Path,
+    manifest_dir: str | Path,
+) -> pd.DataFrame:
+    """Load results.jsonl and join with per-stimulus metadata.
+
+    Noop records (``degradation_dimension == "noop"``) are excluded — use
+    :func:`load_noop_results` to load those separately.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per result record, enriched with metadata columns:
+        edit_type, edit_id, template_id, difficulty_tier,
+        degradation_dimension, degradation_magnitude, degradation_layer,
+        degradation_params, numeric_magnitude, model, experiment,
+        parse_success, plus all score columns.
+    """
+    df = _load_raw_results(results_jsonl, manifest_dir)
+    return df[df["degradation_dimension"] != "noop"].reset_index(drop=True)
+
+
+def load_noop_results(
+    results_jsonl: str | Path,
+    manifest_dir: str | Path,
+) -> pd.DataFrame:
+    """Load only noop records from results.jsonl.
+
+    Noop stimuli show the source image unchanged; the model should say there
+    is no difference (Exp1) and score the edit low (Exp2) since it was never
+    applied.  This data is kept separate for false-positive analysis.
+    """
+    df = _load_raw_results(results_jsonl, manifest_dir)
+    return df[df["degradation_dimension"] == "noop"].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

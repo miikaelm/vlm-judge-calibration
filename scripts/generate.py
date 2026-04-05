@@ -44,6 +44,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 
 from render import Renderer, RenderConfig
 from degradation.specs import resolve_jitter
+from degradation.image_layer import apply_gaussian_noise, apply_jpeg_compression, apply_blur
 from layouts import (
     LayoutDefinition,
     all_layouts,
@@ -185,6 +186,7 @@ class StimulusSpec:
     source_value: object     # value in source (base) layout
     target_value: object     # value in ground_truth
     deg_dimension: str       # degradation dimension (e.g. "color_offset")
+    is_primary: bool = True  # True = primary degradation spec; False = secondary/unrelated
     # All degradation levels for this stimulus.
     # Each entry: {id, magnitude, layer, params, degraded_value, secondary_degs}
     degradations: list = field(default_factory=list)
@@ -196,7 +198,7 @@ class StimulusSpec:
 
 # Dimensions (other than the primary edit dim) that can be applied as style-dict
 # overrides without needing element IDs or HTML surgery.
-_SECONDARY_DIMS = ["scale_error", "rotation", "position_offset", "font_weight", "font_style", "letter_spacing", "opacity"]
+_SECONDARY_DIMS = ["scale_error", "rotation", "position_offset", "font_weight", "font_style", "letter_spacing", "opacity", "gaussian_noise", "jpeg_compression", "blur"]
 
 # How many unrelated degradation dimensions to sample per layout.
 _N_SECONDARY = 5
@@ -236,7 +238,7 @@ def _build_dim_configs(deg_configs: list[dict]) -> dict[str, dict]:
     for dim in _SECONDARY_DIMS:
         candidates = [
             d for d in deg_configs
-            if d["dimension"] == dim and d.get("layer", "html") == "html"
+            if d["dimension"] == dim
         ]
         if not candidates:
             continue
@@ -520,6 +522,7 @@ def _color_manifest(
                 source_value=source_color,
                 target_value=target_color,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -600,6 +603,7 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
                 source_value=base_size,
                 target_value=target_size,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -710,6 +714,7 @@ def _relocation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict
                 source_value=base_alignment,
                 target_value=target_alignment,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -802,6 +807,7 @@ def _font_weight_manifest(layouts: list[LayoutDefinition], deg_configs: list[dic
                 source_value=base_weight_raw,
                 target_value=target_weight,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -893,6 +899,7 @@ def _italic_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], r
                 source_value=base_style,
                 target_value=target_style,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -985,6 +992,7 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
                 source_value=base_ls,
                 target_value=target_value,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -1065,6 +1073,7 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
                 source_value=0.0,
                 target_value=target_deg,
                 deg_dimension=dim,
+                is_primary=False,
                 degradations=unrelated_degradations,
             ))
 
@@ -1110,6 +1119,25 @@ def _apply_style_change(base_styles: dict, role: str, prop: str, value: object) 
     styles = copy.deepcopy(base_styles)
     styles[role][prop] = value
     return styles
+
+
+# ---------------------------------------------------------------------------
+# Image-layer secondary degradation helper
+# ---------------------------------------------------------------------------
+
+def _apply_image_layer_secondary_degs(image_path: Path, secondary_degs: list[dict]) -> None:
+    """Apply image-layer secondary degradations in-place to a rendered PNG."""
+    for deg in secondary_degs:
+        if deg.get("layer") != "image":
+            continue
+        params = resolve_jitter(deg["params"])
+        dim = deg["dimension"]
+        if dim == "gaussian_noise":
+            apply_gaussian_noise(image_path, params["sigma"], image_path)
+        elif dim == "jpeg_compression":
+            apply_jpeg_compression(image_path, int(round(params["quality"])), image_path)
+        elif dim == "blur":
+            apply_blur(image_path, params["radius"], image_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1209,8 @@ async def generate_stimuli(
                         deg_r = await renderer.render_html_string(
                             deg_html, image_dir / f"{spec.stimulus_id}_{deg['magnitude']}.png"
                         )
+                        if deg.get("secondary_degs"):
+                            _apply_image_layer_secondary_degs(deg_r.image_path, deg["secondary_degs"])
 
                         record: dict = {
                             "id": f"{spec.stimulus_id}_{deg['magnitude']}",
@@ -1213,37 +1243,69 @@ async def generate_stimuli(
 
                         f.write(json.dumps(record) + "\n")
 
-                    # Pixel-perfect entry: degraded image IS the ground truth.
-                    pixel_perfect_record: dict = {
-                        "id": f"{spec.stimulus_id}_pixel_perfect",
-                        "edit_type": spec.edit_type,
-                        "layout": spec.layout_name,
-                        "layout_difficulty": layout.difficulty,
-                        "target_role": spec.target_role,
-                        "edit_instruction": instruction,
-                        "edit": {
-                            "property": spec.edit_property,
-                            "source_value": spec.source_value,
-                            "target_value": spec.target_value,
-                        },
-                        "degradation": {
-                            "dimension": spec.deg_dimension,
-                            "id": "pixel_perfect",
-                            "magnitude": 0,
-                            "layer": "html",
-                            "params": {},
-                            "degraded_value": spec.target_value,
-                            "secondary_degs": [],
-                        },
-                        "source_image": src_r.image_path.relative_to(output_dir).as_posix(),
-                        "ground_truth_image": gt_r.image_path.relative_to(output_dir).as_posix(),
-                        "degraded_image": gt_r.image_path.relative_to(output_dir).as_posix(),
-                    }
-                    if base_errors:
-                        pixel_perfect_record["render_errors"] = base_errors
-                    f.write(json.dumps(pixel_perfect_record) + "\n")
+                    if spec.is_primary:
+                        # Pixel-perfect entry: degraded image IS the ground truth.
+                        pixel_perfect_record: dict = {
+                            "id": f"{spec.stimulus_id}_pixel_perfect",
+                            "edit_type": spec.edit_type,
+                            "layout": spec.layout_name,
+                            "layout_difficulty": layout.difficulty,
+                            "target_role": spec.target_role,
+                            "edit_instruction": instruction,
+                            "edit": {
+                                "property": spec.edit_property,
+                                "source_value": spec.source_value,
+                                "target_value": spec.target_value,
+                            },
+                            "degradation": {
+                                "dimension": spec.deg_dimension,
+                                "id": "pixel_perfect",
+                                "magnitude": 0,
+                                "layer": "html",
+                                "params": {},
+                                "degraded_value": spec.target_value,
+                                "secondary_degs": [],
+                            },
+                            "source_image": src_r.image_path.relative_to(output_dir).as_posix(),
+                            "ground_truth_image": gt_r.image_path.relative_to(output_dir).as_posix(),
+                            "degraded_image": gt_r.image_path.relative_to(output_dir).as_posix(),
+                        }
+                        if base_errors:
+                            pixel_perfect_record["render_errors"] = base_errors
+                        f.write(json.dumps(pixel_perfect_record) + "\n")
 
-                    print(f"  [{i}/{n}] OK: {spec.stimulus_id} ({len(spec.degradations)} records + pixel_perfect)")
+                        # Noop entry: degraded image IS the source (no edit applied at all).
+                        noop_record: dict = {
+                            "id": f"{spec.stimulus_id}_noop",
+                            "edit_type": spec.edit_type,
+                            "layout": spec.layout_name,
+                            "layout_difficulty": layout.difficulty,
+                            "target_role": spec.target_role,
+                            "edit_instruction": instruction,
+                            "edit": {
+                                "property": spec.edit_property,
+                                "source_value": spec.source_value,
+                                "target_value": spec.target_value,
+                            },
+                            "degradation": {
+                                "dimension": "noop",
+                                "id": "noop",
+                                "magnitude": "noop",
+                                "layer": "html",
+                                "params": {},
+                                "degraded_value": spec.source_value,
+                                "secondary_degs": [],
+                            },
+                            "source_image": src_r.image_path.relative_to(output_dir).as_posix(),
+                            "ground_truth_image": gt_r.image_path.relative_to(output_dir).as_posix(),
+                            "degraded_image": src_r.image_path.relative_to(output_dir).as_posix(),
+                        }
+                        if base_errors:
+                            noop_record["render_errors"] = base_errors
+                        f.write(json.dumps(noop_record) + "\n")
+
+                    extra = " + pixel_perfect + noop" if spec.is_primary else ""
+                    print(f"  [{i}/{n}] OK: {spec.stimulus_id} ({len(spec.degradations)} records{extra})")
                     n_ok += 1
 
                 except Exception as e:

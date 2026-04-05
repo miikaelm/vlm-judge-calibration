@@ -405,6 +405,103 @@ def _exp2_stats(df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Noop analysis
+# ---------------------------------------------------------------------------
+
+def _noop_stats(noop_df: pd.DataFrame) -> dict:
+    """Compute stats for noop stimuli (image unchanged, no edit applied).
+
+    For Exp1: model should say "no difference" → detection = false positive.
+    For Exp2: model should score low (edit was not applied) → high scores = model was fooled.
+    """
+    out: dict[str, Any] = {}
+
+    # --- Exp1 ---
+    e1 = noop_df[
+        (noop_df["experiment"] == "experiment_1")
+        & noop_df["parse_success"]
+        & noop_df["detected_difference"].notna()
+    ].copy()
+
+    if not e1.empty:
+        e1["detected"] = e1["detected_difference"].astype(bool)
+        fp_overall = float(e1["detected"].mean())
+        sim_vals = e1["similarity_score"].dropna()
+
+        per_et: dict[str, Any] = {}
+        for et in sorted(e1["edit_type"].unique()):
+            sub = e1[e1["edit_type"] == et]
+            sv = sub["similarity_score"].dropna()
+            per_et[et] = {
+                "n": int(len(sub)),
+                "false_positive_rate": round(float(sub["detected"].mean()), 4),
+                "similarity_score_mean": round(float(sv.mean()), 4) if len(sv) else None,
+                "similarity_score_distribution": {
+                    str(v): int(n)
+                    for v, n in sub["similarity_score"].value_counts().sort_index().items()
+                },
+            }
+
+        out["exp1"] = {
+            "n": int(len(e1)),
+            "false_positive_rate": round(fp_overall, 4),
+            "similarity_score_mean": round(float(sim_vals.mean()), 4) if len(sim_vals) else None,
+            "similarity_score_std": round(float(sim_vals.std()), 4) if len(sim_vals) else None,
+            "similarity_score_distribution": {
+                str(v): int(n)
+                for v, n in e1["similarity_score"].value_counts().sort_index().items()
+            },
+            "by_edit_type": per_et,
+        }
+
+    # --- Exp2 ---
+    e2 = noop_df[
+        (noop_df["experiment"] == "experiment_2")
+        & noop_df["parse_success"]
+        & noop_df["overall_quality"].notna()
+    ].copy()
+
+    if not e2.empty:
+        global_scores: dict[str, Any] = {}
+        for col in EXP2_SCORE_COLS:
+            vals = e2[col].dropna()
+            if len(vals) == 0:
+                continue
+            global_scores[col] = {
+                "mean": round(float(vals.mean()), 4),
+                "std": round(float(vals.std()), 4) if len(vals) > 1 else 0.0,
+                # fraction where model was fooled (scored high despite no edit)
+                "acceptance_rate": round(float((vals >= 4).mean()), 4),
+                # fraction where model correctly rejected the noop (scored low)
+                "correct_rejection_rate": round(float((vals <= 2).mean()), 4),
+                "distribution": {str(v): int(n) for v, n in vals.value_counts().sort_index().items()},
+            }
+
+        per_et_e2: dict[str, Any] = {}
+        for et in sorted(e2["edit_type"].unique()):
+            sub = e2[e2["edit_type"] == et]
+            et_entry: dict[str, Any] = {"n": int(len(sub))}
+            for col in EXP2_SCORE_COLS:
+                vals = sub[col].dropna().values
+                if len(vals) == 0:
+                    continue
+                et_entry[col] = {
+                    "mean": round(float(vals.mean()), 4),
+                    "acceptance_rate": round(float((vals >= 4).mean()), 4),
+                    "correct_rejection_rate": round(float((vals <= 2).mean()), 4),
+                }
+            per_et_e2[et] = et_entry
+
+        out["exp2"] = {
+            "n": int(len(e2)),
+            "score_descriptives": global_scores,
+            "by_edit_type": per_et_e2,
+        }
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Cross-experiment gap analysis
 # ---------------------------------------------------------------------------
 
@@ -548,27 +645,33 @@ def _sensitivity_rank(df: pd.DataFrame, exp1_stats: dict, exp2_stats: dict) -> d
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def compute_all_stats(df: pd.DataFrame) -> dict:
+def compute_all_stats(df: pd.DataFrame, noop_df: pd.DataFrame | None = None) -> dict:
     """Compute the full statistics bundle from a combined exp1+exp2 DataFrame.
 
     Parameters
     ----------
     df:
         Output of ``load_results(exp1_path, manifest) + load_results(exp2_path, manifest)``.
+    noop_df:
+        Optional DataFrame from ``load_noop_results``.  When provided, a
+        ``noop`` section is included in the output.
 
     Returns
     -------
-    dict with keys: overview, exp1, exp2, cross_exp, sensitivity_rank
+    dict with keys: overview, exp1, exp2, cross_exp, sensitivity_rank[, noop]
     """
     exp1_stats = _exp1_stats(df)
     exp2_stats = _exp2_stats(df)
-    return {
+    out = {
         "overview": _overview(df),
         "exp1": exp1_stats,
         "exp2": exp2_stats,
         "cross_exp": _cross_exp_stats(df),
         "sensitivity_rank": _sensitivity_rank(df, exp1_stats, exp2_stats),
     }
+    if noop_df is not None and not noop_df.empty:
+        out["noop"] = _noop_stats(noop_df)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +849,56 @@ def print_report(stats: dict) -> None:
                   f"{d.get('mean_exp2_oq', 0):>7.3f} "
                   f"{d.get('score_gap_exp2_minus_exp1', 0):>+7.3f} "
                   f"{rho_str:>10} {bs_str:>7}")
+
+    # Noop analysis
+    noop = stats.get("noop")
+    if noop:
+        print(f"\n{'-'*68}")
+        print("NOOP ANALYSIS (image unchanged — no edit applied)")
+        print(f"{'-'*68}")
+        n1 = noop.get("exp1", {})
+        if n1:
+            print(f"\n  Exp1 (should say 'no difference'):")
+            print(f"  Overall false positive rate : {n1.get('false_positive_rate', float('nan')):.1%}  "
+                  f"(n={n1.get('n','?')})")
+            sim_m = n1.get("similarity_score_mean")
+            sim_s = n1.get("similarity_score_std")
+            if sim_m is not None:
+                print(f"  Sim. score mean (should≈5) : {sim_m:.3f}"
+                      + (f" ± {sim_s:.3f}" if sim_s is not None else ""))
+            print(f"  Sim. score distribution    : {n1.get('similarity_score_distribution', {})}")
+            print()
+            print(f"  {'Edit type':<22} {'FP Rate':>9} {'Sim.Mean':>9}")
+            print(f"  {'-'*22} {'-'*9} {'-'*9}")
+            for et, d in sorted(n1.get("by_edit_type", {}).items()):
+                fp = d.get("false_positive_rate", 0)
+                sm = d.get("similarity_score_mean")
+                sm_str = f"{sm:.3f}" if sm is not None else "    —"
+                print(f"  {et:<22} {fp:>9.1%} {sm_str:>9}")
+
+        n2 = noop.get("exp2", {})
+        if n2:
+            print(f"\n  Exp2 (should score low — edit was not applied):")
+            sd_n = n2.get("score_descriptives", {})
+            print(f"  (acceptance = score≥4; rejection = score≤2; ideal = 1 everywhere)")
+            print()
+            print(f"  {'Score col':<24} {'Mean':>6} {'Std':>6} {'Accept%':>8} {'Reject%':>8}")
+            print(f"  {'-'*24} {'-'*6} {'-'*6} {'-'*8} {'-'*8}")
+            for col in EXP2_SCORE_COLS:
+                s = sd_n.get(col, {})
+                if not s:
+                    continue
+                print(f"  {col:<24} {s.get('mean', 0):>6.3f} {s.get('std', 0):>6.3f} "
+                      f"{s.get('acceptance_rate', 0):>8.1%} "
+                      f"{s.get('correct_rejection_rate', 0):>8.1%}")
+            print()
+            print(f"  {'Edit type':<22} {'OQ.Mean':>8} {'Accept%':>8} {'Reject%':>8}")
+            print(f"  {'-'*22} {'-'*8} {'-'*8} {'-'*8}")
+            for et, d in sorted(n2.get("by_edit_type", {}).items()):
+                oq = d.get("overall_quality", {})
+                print(f"  {et:<22} {oq.get('mean', 0):>8.3f} "
+                      f"{oq.get('acceptance_rate', 0):>8.1%} "
+                      f"{oq.get('correct_rejection_rate', 0):>8.1%}")
 
     # Sensitivity ranking
     print(f"\n{'-'*68}")
