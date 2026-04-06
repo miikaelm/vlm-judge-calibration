@@ -63,6 +63,7 @@ _CONTINUOUS_DIMENSIONS = [
 _DISCRETE_DIMENSIONS = [
     "font_weight",
     "font_style",
+    "font_family",
     "word_error",
     "case_error",
     "content_swap",

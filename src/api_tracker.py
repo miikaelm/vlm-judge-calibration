@@ -5,12 +5,15 @@ Copied from quantitative-text-editing/src/gen_pipeline/api_tracker.py and extend
 with pricing entries for Gemini and Anthropic models.
 
 Usage:
-    from api_tracker import TrackedOpenAI, DummyOpenAI
+    from api_tracker import TrackedOpenAI, TrackedGemini, DummyOpenAI
 
     client = TrackedOpenAI(api_key=os.environ["OPENAI_API_KEY"], note="exp2_gpt4o")
+    client = TrackedGemini(api_key=os.environ["GEMINI_API_KEY"], note="exp2_gemini")
     client = DummyOpenAI()   # zero-cost smoke testing
 
-Log file: api_usage_log.csv — one row per call, appended immediately.
+Log files (separate per provider):
+    src/openai_api_usage_log.csv
+    src/gemini_api_usage_log.csv
 """
 
 from __future__ import annotations
@@ -46,7 +49,15 @@ PRICING: dict[str, dict[str, float]] = {
     "gemini-3.1-pro":     {"input": 2.00,  "output": 12.00},
 }
 
-DEFAULT_LOG_PATH = Path(__file__).parent / "api_usage_log.csv"
+DEFAULT_OPENAI_LOG_PATH = Path(__file__).parent / "openai_api_usage_log.csv"
+DEFAULT_GEMINI_LOG_PATH = Path(__file__).parent / "gemini_api_usage_log.csv"
+DEFAULT_LOG_PATH = DEFAULT_OPENAI_LOG_PATH  # backwards-compat alias
+
+# Gemini-friendly model names → actual API model IDs (OpenAI-compat endpoint)
+_GEMINI_API_MODEL_NAMES: dict[str, str] = {
+    "gemini-3.1-pro":   "gemini-3.1-pro-preview",
+    "gemini-2.5-pro":   "gemini-2.5-pro-preview-03-25",
+}
 
 CSV_HEADER = [
     "timestamp_utc",
@@ -167,7 +178,7 @@ class TrackedOpenAI:
     def __init__(
         self,
         api_key: str | None = None,
-        log_path: Path | str = DEFAULT_LOG_PATH,
+        log_path: Path | str = DEFAULT_OPENAI_LOG_PATH,
         note: str = "",
         **openai_kwargs: Any,
     ) -> None:
@@ -179,6 +190,62 @@ class TrackedOpenAI:
         self._client = OpenAI(api_key=api_key, **openai_kwargs)
         self._log_path = Path(log_path)
         self.chat = _TrackedChat(self._client.chat, self._log_path, note)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+class _GeminiTrackedCompletions:
+    """Like _TrackedCompletions but resolves Gemini model aliases before the API call
+    and logs using the friendly name (for consistent pricing lookups)."""
+
+    def __init__(self, real_completions: Any, log_path: Path, note: str) -> None:
+        self._real = real_completions
+        self._log_path = log_path
+        self._note = note
+
+    def create(self, **kwargs) -> Any:
+        friendly_model = kwargs.get("model", "unknown")
+        api_model = _GEMINI_API_MODEL_NAMES.get(friendly_model, friendly_model)
+        kwargs["model"] = api_model
+        response = self._real.create(**kwargs)
+        usage = response.usage
+        if usage:
+            _append_log_row(
+                self._log_path,
+                model=friendly_model,  # log friendly name so pricing lookup works
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                note=self._note,
+            )
+        return response
+
+
+class _GeminiTrackedChat:
+    def __init__(self, real_chat: Any, log_path: Path, note: str) -> None:
+        self.completions = _GeminiTrackedCompletions(real_chat.completions, log_path, note)
+
+
+class TrackedGemini:
+    """Drop-in replacement for TrackedOpenAI that routes calls to the Gemini API
+    via Google's OpenAI-compatible endpoint and logs to a separate CSV."""
+
+    _BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        log_path: Path | str = DEFAULT_GEMINI_LOG_PATH,
+        note: str = "",
+    ) -> None:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+
+        self._client = OpenAI(api_key=api_key, base_url=self._BASE_URL)
+        self._log_path = Path(log_path)
+        self.chat = _GeminiTrackedChat(self._client.chat, self._log_path, note)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)

@@ -93,7 +93,7 @@ register(LayoutDefinition(
     id="sh",
     difficulty="easy",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment", "relocation", "font_weight", "italic", "letter_spacing"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation", "font_weight", "italic", "letter_spacing", "font_family"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -160,7 +160,7 @@ register(LayoutDefinition(
     id="ts",
     difficulty="easy",
     roles=["title", "subtitle"],
-    supported_edits=["color", "scale", "font_weight", "italic", "letter_spacing"],
+    supported_edits=["color", "scale", "font_weight", "italic", "letter_spacing", "font_family"],
     primary_role="subtitle",  # title-type edits covered by solo_headline; this tests secondary text
     role_constraints={
         "title":    RoleConstraints(color_editable=True, can_scale=True),
@@ -225,7 +225,7 @@ register(LayoutDefinition(
     id="hb",
     difficulty="easy",
     roles=["header", "body"],
-    supported_edits=["color", "scale", "font_weight", "italic", "letter_spacing"],
+    supported_edits=["color", "scale", "font_weight", "italic", "letter_spacing", "font_family"],
     primary_role="body",  # tests body/paragraph text color, smaller and lower contrast than a headline
     role_constraints={
         "header": RoleConstraints(color_editable=True, can_scale=True),
@@ -296,7 +296,7 @@ register(LayoutDefinition(
     id="tb",
     difficulty="medium",
     roles=["title", "byline"],
-    supported_edits=["color", "scale", "rotation", "alignment", "relocation"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation", "font_family"],
     primary_role="byline",  # tests absolutely-positioned small text; title-type covered by other layouts
     role_constraints={
         "title":  RoleConstraints(
@@ -369,7 +369,7 @@ register(LayoutDefinition(
     id="nc",
     difficulty="medium",
     roles=["name", "job_title", "organization"],
-    supported_edits=["color", "scale", "font_weight"],
+    supported_edits=["color", "scale", "font_weight", "font_family"],
     primary_role="name",
     role_constraints={
         # job_title and organization are below → "down" would overlap them
@@ -449,7 +449,7 @@ register(LayoutDefinition(
     id="qa",
     difficulty="medium",
     roles=["quote", "attribution"],
-    supported_edits=["color", "scale", "italic"],
+    supported_edits=["color", "scale", "italic", "font_family"],
     primary_role="quote",
     role_constraints={
         # attribution is below → "down" would overlap it
@@ -521,7 +521,7 @@ register(LayoutDefinition(
     id="cb",
     difficulty="medium",
     roles=["label", "badge"],
-    supported_edits=["color", "scale", "alignment"],
+    supported_edits=["color", "scale", "alignment", "font_family"],
     primary_role="badge",  # tests the small corner-positioned element against a dark background
     role_constraints={
         "label": RoleConstraints(color_editable=True, can_scale=True),
@@ -599,7 +599,7 @@ register(LayoutDefinition(
     id="sp",
     difficulty="medium",
     roles=["label", "descriptor"],
-    supported_edits=["color", "scale", "alignment"],
+    supported_edits=["color", "scale", "alignment", "font_family"],
     primary_role="label",
     role_constraints={
         "label":      RoleConstraints(color_editable=True, can_scale=True),
@@ -669,7 +669,7 @@ register(LayoutDefinition(
     id="bc",
     difficulty="medium",
     roles=["banner", "caption"],
-    supported_edits=["color", "scale", "alignment", "letter_spacing"],
+    supported_edits=["color", "scale", "alignment", "letter_spacing", "font_family"],
     primary_role="banner",
     role_constraints={
         # caption is below → "down" would overlap it
@@ -744,7 +744,7 @@ register(LayoutDefinition(
     id="tch",
     difficulty="multi",
     roles=["left_heading", "right_heading"],
-    supported_edits=["color", "scale", "rotation"],
+    supported_edits=["color", "scale", "rotation", "font_family"],
     primary_role="left_heading",
     role_constraints={
         "left_heading":  RoleConstraints(
@@ -795,7 +795,7 @@ register(LayoutDefinition(
     id="lcc",
     difficulty="hard",
     roles=["headline"],
-    supported_edits=["color", "scale"],
+    supported_edits=["color", "scale", "font_family"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(color_editable=True, can_scale=True),
@@ -832,7 +832,7 @@ register(LayoutDefinition(
     id="gh",
     difficulty="easy",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment", "relocation"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation", "font_family"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -881,7 +881,7 @@ register(LayoutDefinition(
     id="ph",
     difficulty="easy",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment", "relocation"],
+    supported_edits=["color", "scale", "rotation", "alignment", "relocation", "font_family"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -933,7 +933,7 @@ register(LayoutDefinition(
     id="ibh",
     difficulty="medium",
     roles=["headline"],
-    supported_edits=["color", "scale", "rotation", "alignment"],
+    supported_edits=["color", "scale", "rotation", "alignment", "font_family"],
     primary_role="headline",
     role_constraints={
         "headline": RoleConstraints(
@@ -1010,6 +1010,10 @@ LAYOUT_SETS.update({
     # Letter spacing (tracking in px): 3 easy + 1 medium (large banner makes tracking visible)
     ("letter_spacing", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
     ("letter_spacing", "medium"): ["banner_caption"],
+
+    # Font family (typeface change): 3 easy (simple layouts) + 1 medium (gradient bg adds visual noise)
+    ("font_family", "easy"):   ["solo_headline", "title_subtitle", "header_body"],
+    ("font_family", "medium"): ["gradient_headline"],
 })
 
 validate_layout_sets()

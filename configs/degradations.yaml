@@ -652,6 +652,67 @@ degradations:
     notes: "~70% transparent"
 
   # ---------------------------------------------------------------------------
+  # FONT FAMILY — 7 configs (categorical; no jitter)
+  # Magnitude label = short font name; visual distance from target is computed
+  # at generation time by comparing CSS font-family categories.
+  # ---------------------------------------------------------------------------
+  - id: font_family_arial
+    dimension: font_family
+    magnitude: arial
+    layer: html
+    params:
+      font_family: "Arial, Helvetica, sans-serif"
+    notes: "Grotesque sans-serif"
+
+  - id: font_family_verdana
+    dimension: font_family
+    magnitude: verdana
+    layer: html
+    params:
+      font_family: "Verdana, Geneva, sans-serif"
+    notes: "Humanist sans-serif (wider)"
+
+  - id: font_family_trebuchet
+    dimension: font_family
+    magnitude: trebuchet
+    layer: html
+    params:
+      font_family: "'Trebuchet MS', Arial, sans-serif"
+    notes: "Humanist sans-serif"
+
+  - id: font_family_georgia
+    dimension: font_family
+    magnitude: georgia
+    layer: html
+    params:
+      font_family: "Georgia, 'Times New Roman', serif"
+    notes: "Old-style serif"
+
+  - id: font_family_palatino
+    dimension: font_family
+    magnitude: palatino
+    layer: html
+    params:
+      font_family: "'Palatino Linotype', Palatino, 'Book Antiqua', serif"
+    notes: "Humanist serif"
+
+  - id: font_family_courier
+    dimension: font_family
+    magnitude: courier
+    layer: html
+    params:
+      font_family: "'Courier New', Courier, monospace"
+    notes: "Monospace — strongly different from proportional fonts"
+
+  - id: font_family_impact
+    dimension: font_family
+    magnitude: impact
+    layer: html
+    params:
+      font_family: "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif"
+    notes: "Condensed display sans-serif — strongly different from body fonts"
+
+  # ---------------------------------------------------------------------------
   # IMAGE-LAYER: GAUSSIAN NOISE — 3 configs
   # ---------------------------------------------------------------------------
   - id: gaussian_noise_small

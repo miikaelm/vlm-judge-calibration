@@ -28,12 +28,22 @@ _DIMENSION_ORDER = [
     "content_swap",
     "font_weight",
     "font_style",
+    "font_family",
     "gaussian_noise",
     "jpeg_compression",
     "blur",
 ]
 
 _EDIT_TYPE_ORDER = [
+    "color",
+    "scale",
+    "rotation",
+    "relocation",
+    "font_weight",
+    "italic",
+    "letter_spacing",
+    "font_family",
+    # Legacy edit type names from older result files:
     "color_change",
     "position_change",
     "scale_change",

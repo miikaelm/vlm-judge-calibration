@@ -123,6 +123,55 @@ def _normalize_weight(w) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Font-family helpers
+# ---------------------------------------------------------------------------
+
+# All CSS font-family strings used across layouts and degradation configs.
+_FONT_FAMILY_TARGETS: list[str] = [
+    "Arial, Helvetica, sans-serif",
+    "Verdana, Geneva, sans-serif",
+    "'Trebuchet MS', Arial, sans-serif",
+    "Georgia, 'Times New Roman', serif",
+    "'Palatino Linotype', Palatino, 'Book Antiqua', serif",
+    "'Courier New', Courier, monospace",
+    "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif",
+]
+
+# Broad category used to compute perceptual distance between font families.
+_FONT_FAMILY_CATEGORY: dict[str, str] = {
+    "Arial, Helvetica, sans-serif":                             "sans_serif",
+    "Verdana, Geneva, sans-serif":                              "sans_serif",
+    "'Trebuchet MS', Arial, sans-serif":                        "sans_serif",
+    "Georgia, 'Times New Roman', serif":                        "serif",
+    "'Palatino Linotype', Palatino, 'Book Antiqua', serif":     "serif",
+    "'Courier New', Courier, monospace":                        "monospace",
+    "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif": "display",
+}
+
+# Human-friendly names for use in edit instructions.
+_FONT_FAMILY_DISPLAY: dict[str, str] = {
+    "Arial, Helvetica, sans-serif":                             "Arial",
+    "Verdana, Geneva, sans-serif":                              "Verdana",
+    "'Trebuchet MS', Arial, sans-serif":                        "Trebuchet MS",
+    "Georgia, 'Times New Roman', serif":                        "Georgia",
+    "'Palatino Linotype', Palatino, 'Book Antiqua', serif":     "Palatino",
+    "'Courier New', Courier, monospace":                        "Courier New",
+    "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif": "Impact",
+}
+
+
+def _font_family_distance(a: str, b: str) -> float:
+    """Perceptual distance between two font families.
+
+    Returns 0.0 if identical, 0.5 if same broad category (both serif / both
+    sans-serif / etc.), 1.0 if different categories.
+    """
+    if a == b:
+        return 0.0
+    return 0.5 if _FONT_FAMILY_CATEGORY.get(a) == _FONT_FAMILY_CATEGORY.get(b) else 1.0
+
+
+# ---------------------------------------------------------------------------
 # Letter-spacing helpers
 # ---------------------------------------------------------------------------
 
@@ -200,7 +249,7 @@ class StimulusSpec:
 
 # Dimensions (other than the primary edit dim) that can be applied as style-dict
 # overrides without needing element IDs or HTML surgery.
-_SECONDARY_DIMS = ["scale_error", "rotation", "position_offset", "font_weight", "font_style", "letter_spacing", "opacity", "gaussian_noise", "jpeg_compression", "blur"]
+_SECONDARY_DIMS = ["scale_error", "rotation", "position_offset", "font_weight", "font_style", "letter_spacing", "font_family", "opacity", "gaussian_noise", "jpeg_compression", "blur"]
 
 # How many unrelated degradation dimensions to sample per layout.
 _N_SECONDARY = 5
@@ -335,6 +384,8 @@ def _apply_secondary_degs_to_styles(
             styles[role]["font_style"] = params["font_style"]
         elif dim == "letter_spacing":
             styles[role]["letter_spacing"] = f"{params['letter_spacing_px']}px"
+        elif dim == "font_family":
+            styles[role]["font_family"] = params["font_family"]
         elif dim == "opacity":
             styles[role]["opacity"] = params["opacity"]
     return styles
@@ -429,6 +480,13 @@ def _edit_instruction(spec: "StimulusSpec", target_text: str, rng: random.Random
             tilt = rng.choice(["slightly", "a little", "a bit"])
             return f"Tilt the {ref} {tilt} {direction}" if ref == role_ref else f"Tilt {ref} {tilt} {direction}"
         return f"Rotate the {ref} {abs_deg:.0f} degrees {direction}" if ref == role_ref else f"Rotate {ref} {abs_deg:.0f} degrees {direction}"
+
+    elif spec.edit_type == "font_family":
+        tgt_display = _FONT_FAMILY_DISPLAY.get(str(tgt), str(tgt).split(",")[0].strip("'\" "))
+        verb = rng.choice(["Change", "Switch"])
+        if rng.random() < 0.5:
+            return f"{verb} the {role_ref} font to {tgt_display}"
+        return f"{verb} the font of {text_ref} to {tgt_display}"
 
     return f"Apply {spec.edit_type} edit to the {role_ref}."
 
@@ -1086,6 +1144,101 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
     return specs
 
 
+def _font_family_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rng=None, seed=None) -> list[StimulusSpec]:
+    """Font family: change the typeface to a different CSS font-family.
+
+    Primary degradation: wrong font families ordered by perceptual distance from target
+    (same category = similar/0.5, different category = different/1.0).
+    Secondary degradations: unrelated property errors while font-family is correct.
+    """
+    if rng is None:
+        rng = random.Random(seed)
+    ff_degs = [d for d in deg_configs if d["dimension"] == "font_family"]
+    dim_configs = _build_dim_configs(deg_configs)
+    secondary_dims = [d for d in dim_configs.keys() if d != "font_family"]
+
+    specs = []
+    for layout in layouts:
+        if "font_family" not in layout.supported_edits:
+            continue
+        layout_rng = random.Random(f"{seed}:{layout.id}")
+        role = layout.primary_role
+        source_font = layout.role_base_styles[role]["font_family"]
+
+        available_targets = [f for f in _FONT_FAMILY_TARGETS if f != source_font]
+        target_font = layout_rng.choice(available_targets)
+
+        # Wrong fonts: all ff configs that are neither the target nor the source,
+        # sorted ascending by perceptual distance from target (closest first).
+        wrong_degs = sorted(
+            [d for d in ff_degs if d["params"]["font_family"] not in (target_font, source_font)],
+            key=lambda d: _font_family_distance(target_font, d["params"]["font_family"]),
+        )
+        three_levels = _pick_tiny_moderate_large(wrong_degs)
+        if not three_levels:
+            continue
+
+        primary_degs = []
+        for deg in three_levels:
+            primary_degs.append({
+                "id": deg["id"],
+                "magnitude": deg["magnitude"],
+                "layer": deg.get("layer", "html"),
+                "params": deg["params"],
+                "degraded_value": deg["params"]["font_family"],
+                "secondary_degs": [],
+            })
+
+        specs.append(StimulusSpec(
+            stimulus_id=f"font_family_{layout.id}_font_family",
+            layout_name=layout.name,
+            edit_type="font_family",
+            target_role=role,
+            edit_property="font_family",
+            source_value=source_font,
+            target_value=target_font,
+            deg_dimension="font_family",
+            degradations=primary_degs,
+        ))
+
+        # Unrelated specs: font_family is correct, one unrelated property is degraded per spec.
+        available_dims = _allowed_secondary_dims(secondary_dims, layout)
+        n_unrelated = min(_N_SECONDARY, len(available_dims))
+        sampled_dims = layout_rng.sample(available_dims, n_unrelated)
+        for dim in sampled_dims:
+            dim_data = dim_configs[dim]
+            candidates = _pick_secondary_candidates(dim, dim_data, layout_rng, layout, role)
+
+            three_levels = _pick_tiny_moderate_large(candidates)
+            if not three_levels:
+                continue
+
+            unrelated_degradations = []
+            for deg in three_levels:
+                unrelated_degradations.append({
+                    "id": deg["id"],
+                    "magnitude": deg["magnitude"],
+                    "layer": deg.get("layer", "html"),
+                    "params": deg["params"],
+                    "degraded_value": target_font,  # font_family is perfectly correct
+                    "secondary_degs": [deg],
+                })
+            specs.append(StimulusSpec(
+                stimulus_id=f"font_family_{layout.id}_{dim}",
+                layout_name=layout.name,
+                edit_type="font_family",
+                target_role=role,
+                edit_property="font_family",
+                source_value=source_font,
+                target_value=target_font,
+                deg_dimension=dim,
+                is_primary=False,
+                degradations=unrelated_degradations,
+            ))
+
+    return specs
+
+
 _MANIFEST_BUILDERS = {
     "color":          _color_manifest,
     "scale":          _scale_manifest,
@@ -1094,6 +1247,7 @@ _MANIFEST_BUILDERS = {
     "font_weight":    _font_weight_manifest,
     "italic":         _italic_manifest,
     "letter_spacing": _letter_spacing_manifest,
+    "font_family":    _font_family_manifest,
 }
 
 

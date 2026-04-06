@@ -192,13 +192,16 @@ def _exp1_stats(df: pd.DataFrame) -> dict:
         rho_det, p_det = _safe_pointbiserial(mags, det)
         rho_sim_all, p_sim_all = _safe_spearman(mags, sub["similarity_score"].values)
 
-        # per-magnitude detection rate table (mag > 0 only)
+        # per-magnitude detection rate table grouped by magnitude class label
         mag_table = (
-            sub.groupby("numeric_magnitude")["detected"]
-            .agg(["mean", "count"])
-            .rename(columns={"mean": "detection_rate", "count": "n"})
+            sub.groupby("degradation_magnitude")
+            .agg(
+                detection_rate=("detected", "mean"),
+                n=("detected", "count"),
+                numeric_magnitude_mean=("numeric_magnitude", "mean"),
+            )
             .reset_index()
-            .sort_values("numeric_magnitude")
+            .sort_values("numeric_magnitude_mean")
         )
 
         jnd = _jnd_threshold(mags, det, target=0.5)
@@ -221,9 +224,10 @@ def _exp1_stats(df: pd.DataFrame) -> dict:
             "jnd_75pct": jnd75,
             # per-magnitude breakdown (degraded only)
             "by_magnitude": {
-                str(row["numeric_magnitude"]): {
+                str(row["degradation_magnitude"]): {
                     "detection_rate": round(float(row["detection_rate"]), 4),
                     "n": int(row["n"]),
+                    "numeric_magnitude_mean": round(float(row["numeric_magnitude_mean"]), 4),
                 }
                 for _, row in mag_table.iterrows()
             },
@@ -339,14 +343,25 @@ def _exp2_stats(df: pd.DataFrame) -> dict:
                 "magnitude_p": round(p, 4) if not np.isnan(p) else None,
             }
 
-        # per-magnitude mean overall_quality table
-        oq = sub[sub["overall_quality"].notna()].groupby("numeric_magnitude")["overall_quality"]
-        mag_table = oq.agg(["mean", "std", "count"]).reset_index().sort_values("numeric_magnitude")
+        # per-magnitude mean overall_quality table grouped by magnitude class label
+        oq_sub = sub[sub["overall_quality"].notna()]
+        mag_table = (
+            oq_sub.groupby("degradation_magnitude")
+            .agg(
+                mean=("overall_quality", "mean"),
+                std=("overall_quality", "std"),
+                count=("overall_quality", "count"),
+                numeric_magnitude_mean=("numeric_magnitude", "mean"),
+            )
+            .reset_index()
+            .sort_values("numeric_magnitude_mean")
+        )
         dim_entry["overall_quality_by_magnitude"] = {
-            str(row["numeric_magnitude"]): {
+            str(row["degradation_magnitude"]): {
                 "mean": round(float(row["mean"]), 4),
                 "std": round(float(row["std"]) if not np.isnan(row["std"]) else 0.0, 4),
                 "n": int(row["count"]),
+                "numeric_magnitude_mean": round(float(row["numeric_magnitude_mean"]), 4),
             }
             for _, row in mag_table.iterrows()
         }

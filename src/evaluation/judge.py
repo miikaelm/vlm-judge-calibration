@@ -27,7 +27,7 @@ _PROMPTS_PATH = Path(__file__).parent.parent.parent / "configs" / "vlm_prompts.y
 class JudgeConfig:
     model: str = "gpt-4o"
     temperature: float = 0.0
-    max_tokens: int = 512
+    max_tokens: int = 1024
     prompt_variant: str = "experiment_2"
     prompts_path: Path = field(default_factory=lambda: _PROMPTS_PATH)
     log_note: str = ""

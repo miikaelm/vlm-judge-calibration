@@ -25,10 +25,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 from pathlib import Path
 from typing import Any
 
-from src.api_tracker import DummyOpenAI, TrackedOpenAI, PRICING
+from src.api_tracker import DummyOpenAI, TrackedGemini, TrackedOpenAI, PRICING
 from src.evaluation.judge import JudgeConfig, JudgeResult, run_judge
 from src.evaluation.parser import log_parse_failure
 
@@ -107,6 +108,14 @@ def _result_to_dict(result: JudgeResult, prompt_variant: str) -> dict:
 def _make_client(model: str, prompt_variant: str) -> Any:
     if model == "dummy":
         return DummyOpenAI(prompt_variant=prompt_variant)
+    if model.startswith("gemini"):
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY environment variable not set. "
+                "Use --model dummy for testing without an API key."
+            )
+        return TrackedGemini(api_key=api_key, note=f"eval_{prompt_variant}")
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -128,7 +137,7 @@ def run_evaluation(
     manifest_dir = Path(manifest_dir)
     entries = _load_manifest(manifest_dir)
     if limit is not None:
-        entries = entries[:limit]
+        entries = random.sample(entries, min(limit, len(entries)))
 
     n = len(entries)
     print(f"[runner] Found {n} stimuli in {manifest_dir / 'manifest.jsonl'}")

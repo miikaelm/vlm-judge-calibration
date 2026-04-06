@@ -72,6 +72,30 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
             str(params.get("font_style", "")), 0.0
         )
 
+    elif dimension == "font_family":
+        # Assign perceptual distinctiveness by category: body-text categories
+        # (sans-serif, serif) score 0.5; highly distinctive categories
+        # (monospace, display/condensed) score 1.0.  This is a proxy for the
+        # true target-relative distance used at generation time, but gives a
+        # monotone ordering suitable for x-axis ranking on curves.
+        _FF_CATEGORY: dict[str, str] = {
+            "Arial, Helvetica, sans-serif":                              "sans_serif",
+            "Verdana, Geneva, sans-serif":                               "sans_serif",
+            "'Trebuchet MS', Arial, sans-serif":                         "sans_serif",
+            "Georgia, 'Times New Roman', serif":                         "serif",
+            "'Palatino Linotype', Palatino, 'Book Antiqua', serif":      "serif",
+            "'Courier New', Courier, monospace":                         "monospace",
+            "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif": "display",
+        }
+        _FF_SCORE: dict[str, float] = {
+            "sans_serif": 0.5, "serif": 0.5, "monospace": 1.0, "display": 1.0,
+        }
+        ff = str(params.get("font_family", ""))
+        if not ff:
+            return 0.0  # empty params = pixel_perfect / no degradation
+        cat = _FF_CATEGORY.get(ff, "unknown")
+        return _FF_SCORE.get(cat, 0.75)
+
     elif dimension == "letter_spacing":
         return abs(_midpoint(params, "letter_spacing_px"))
 
@@ -127,6 +151,7 @@ def _x_label(dimension: str) -> str:
         "gaussian_noise": "Noise σ",
         "jpeg_compression": "Compression severity (100-quality)",
         "blur": "Blur radius",
+        "font_family": "Category distance (0.5=same, 1.0=different)",
     }
     return labels.get(dimension, dimension)
 
@@ -291,39 +316,34 @@ def plot_sensitivity_curve(
         ax.set_title(f"Sensitivity curve — {dimension} [{vlm}]")
         return fig
 
-    edit_types = sorted(sub["edit_type"].unique())
     fig, ax = plt.subplots(figsize=figsize)
 
-    for et in edit_types:
-        et_sub = sub[sub["edit_type"] == et]
-        grouped = (
-            et_sub.groupby("numeric_magnitude")[exp2_score]
-            .agg(["mean", "sem"])
-            .reset_index()
-            .sort_values("numeric_magnitude")
-        )
-        x = grouped["numeric_magnitude"].values.astype(float)
-        y = grouped["mean"].values.astype(float)
-        yerr = np.nan_to_num(grouped["sem"].values.astype(float))
-        line, = ax.plot(x, y, marker="o", label=et)
-        ax.fill_between(x, y - yerr, y + yerr, alpha=0.15, color=line.get_color())
-
-    # Also plot overall mean across edit types
-    overall = (
+    # Aggregate all edit types together
+    grouped = (
         sub.groupby("numeric_magnitude")[exp2_score]
         .agg(["mean", "sem"])
         .reset_index()
         .sort_values("numeric_magnitude")
     )
-    ax.plot(
-        overall["numeric_magnitude"],
-        overall["mean"],
-        color="black",
-        linewidth=2,
-        linestyle="--",
-        marker="s",
-        label="overall mean",
-    )
+    x = grouped["numeric_magnitude"].values.astype(float)
+    y = grouped["mean"].values.astype(float)
+    yerr = np.nan_to_num(grouped["sem"].values.astype(float))
+
+    color = "steelblue"
+
+    # Shaded confidence band
+    ax.fill_between(x, y - yerr, y + yerr, alpha=0.2, color=color)
+
+    # Dots at actual data points
+    ax.scatter(x, y, s=50, zorder=5, color=color)
+
+    # Polynomial regression line (degree ≤ 2, capped by available points)
+    if len(x) >= 2:
+        deg = min(2, len(x) - 1)
+        coeffs = np.polyfit(x, y, deg)
+        x_smooth = np.linspace(x.min(), x.max(), 300)
+        y_smooth = np.polyval(coeffs, x_smooth)
+        ax.plot(x_smooth, y_smooth, color=color, linewidth=2, label="regression")
 
     ax.set_xlabel(_x_label(dimension))
     ax.set_ylabel(exp2_score.replace("_", " ").title() + " (1–5)")
@@ -353,6 +373,7 @@ _DIM_TO_EDIT_TYPE: dict[str, str] = {
     "font_weight":       "font_weight",
     "font_style":        "italic",
     "letter_spacing":    "letter_spacing",
+    "font_family":       "font_family",
     "opacity":           "opacity",
 }
 
@@ -452,16 +473,33 @@ def _pick_example_stimuli(
     # ------------------------------------------------------------------ #
     in_dim_sids: list[str] = []
     if primary_et is not None:
-        mag_to_sids: dict[float, list[str]] = {}
+        # Group by magnitude *label* (string tier like "small", "medium", etc.)
+        # rather than resolved numeric value — jitter means the same tier can
+        # produce slightly different numerics across layouts, which would
+        # otherwise inflate the panel count.
+        mag_label_to_sids: dict[str, list[str]] = {}
         for sid in dim_sids_meta:
-            if sid in mag_map and et_map.get(sid) == primary_et:
-                mag_to_sids.setdefault(mag_map[sid], []).append(sid)
+            if et_map.get(sid) != primary_et:
+                continue
+            row = sub_e2[sub_e2["stimulus_id"] == sid]
+            if row.empty:
+                row = sub_e1[sub_e1["stimulus_id"] == sid]
+            if row.empty:
+                continue
+            label = str(row["degradation_magnitude"].iloc[0])
+            mag_label_to_sids.setdefault(label, []).append(sid)
 
-        for mag in sorted(mag_to_sids):
-            bucket = mag_to_sids[mag]
+        # Sort buckets by their median numeric magnitude so panels stay ordered.
+        def _bucket_median(label: str) -> float:
+            sids = mag_label_to_sids[label]
+            return float(np.median([mag_map[s] for s in sids if s in mag_map] or [0.0]))
+
+        for label in sorted(mag_label_to_sids, key=_bucket_median):
+            bucket = mag_label_to_sids[label]
             has_e2 = [s for s in bucket
                       if not sub_e2[sub_e2["stimulus_id"] == s].empty]
-            chosen_sid = has_e2[0] if has_e2 else bucket[0]
+            candidates = has_e2 if has_e2 else bucket
+            chosen_sid = random.choice(candidates)
             in_dim_sids.append(chosen_sid)
 
     in_dim_set = set(in_dim_sids)
@@ -477,9 +515,14 @@ def _pick_example_stimuli(
         co_filt = vlm_filt & (df["degradation_dimension"] == "color_offset")
         co_e1 = df[co_filt & (df["experiment"] == "experiment_1")]["stimulus_id"]
         co_e2 = df[co_filt & (df["experiment"] == "experiment_2")]["stimulus_id"]
+        # Only include color_offset stimuli where color_offset is a *secondary*
+        # degradation — i.e. the edit type is NOT color.  Primary color stimuli
+        # (edit_type == "color", degradation_dimension == "color_offset") must not
+        # bleed into secondary panels of unrelated dimensions.
         color_offset_sids = {
             sid for sid in set(co_e1).union(co_e2)
             if sid in manifest_index and sid in mag_map
+            and et_map.get(sid) != "color"
         }
 
     secondary_pool = [

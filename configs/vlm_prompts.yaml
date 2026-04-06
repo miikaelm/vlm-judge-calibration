@@ -34,7 +34,6 @@ prompts:
 
       Return ONLY this exact JSON object:
       {
-        "analysis": "<describe what the edit did, how well it matches the instruction, and any artefacts or issues you observe>",
         "instruction_following": <integer 1-5>,
         "text_accuracy": <integer 1-5>,
         "visual_consistency": <integer 1-5>,
