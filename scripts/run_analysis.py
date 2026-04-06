@@ -70,14 +70,9 @@ _DISCRETE_DIMENSIONS = [
 
 _ALL_DIMENSIONS = _CONTINUOUS_DIMENSIONS + _DISCRETE_DIMENSIONS
 
-# Dimensions that represent actual design-edit degradations and get exp-gap
-# plots.  Image-level secondary degradations (blur, noise, jpeg) are excluded
-# from the gap analysis but can still appear as sample panels inside other
-# plots' example rows.
-_EXP_GAP_DIMENSIONS = [
-    d for d in _ALL_DIMENSIONS
-    if d not in {"gaussian_noise", "jpeg_compression", "blur"}
-]
+# Every dimension gets its own exp-gap plot.  Each plot shows only stimuli
+# belonging to that specific degradation dimension.
+_EXP_GAP_DIMENSIONS = list(_ALL_DIMENSIONS)
 
 _EXP2_SCORE_COLS = [
     "overall_quality",

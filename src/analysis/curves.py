@@ -345,13 +345,15 @@ def plot_sensitivity_curve(
 # Dimensions absent from this map have no clear primary edit type; those
 # samples are still included but all treated as secondary.
 _DIM_TO_EDIT_TYPE: dict[str, str] = {
-    "color_offset":    "color",
-    "alignment_error": "relocation",
-    "rotation":        "rotation",
-    "scale_error":     "scale",
-    "font_weight":     "font_weight",
-    "font_style":      "italic",
-    "letter_spacing":  "letter_spacing",
+    "color_offset":      "color",
+    "alignment_error":   "relocation",
+    "position_offset":   "relocation",
+    "rotation":          "rotation",
+    "scale_error":       "scale",
+    "font_weight":       "font_weight",
+    "font_style":        "italic",
+    "letter_spacing":    "letter_spacing",
+    "opacity":           "opacity",
 }
 
 
@@ -465,12 +467,25 @@ def _pick_example_stimuli(
     in_dim_set = set(in_dim_sids)
 
     # ------------------------------------------------------------------ #
-    # Secondary: up to n_secondary from ALL dimensions (any edit type),  #
-    # excluding in-dim picks, stratified by magnitude tertile            #
+    # Secondary: from the SAME dimension (any edit type other than the   #
+    # primary) PLUS color_offset stimuli from other dimensions, as a     #
+    # perceptual baseline.  Excludes in-dim picks, stratified by         #
+    # magnitude tertile.                                                 #
     # ------------------------------------------------------------------ #
+    color_offset_sids: set[str] = set()
+    if dimension != "color_offset":
+        co_filt = vlm_filt & (df["degradation_dimension"] == "color_offset")
+        co_e1 = df[co_filt & (df["experiment"] == "experiment_1")]["stimulus_id"]
+        co_e2 = df[co_filt & (df["experiment"] == "experiment_2")]["stimulus_id"]
+        color_offset_sids = {
+            sid for sid in set(co_e1).union(co_e2)
+            if sid in manifest_index and sid in mag_map
+        }
+
     secondary_pool = [
         sid for sid in mag_map
         if sid not in in_dim_set and mag_map[sid] > 0
+        and (sid in dim_sids_meta or sid in color_offset_sids)
     ]
     secondary_pool_sorted = sorted(secondary_pool, key=lambda s: mag_map[s])
     total_sec = len(secondary_pool_sorted)
