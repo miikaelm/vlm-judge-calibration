@@ -68,6 +68,8 @@ def _param_nominal(params: dict, key: str):
     return 0
 
 
+
+
 # ---------------------------------------------------------------------------
 # Edit target values (the "correct" values in the ground_truth image)
 # ---------------------------------------------------------------------------
@@ -467,13 +469,14 @@ def _color_manifest(
         # 1. Primary spec: color_offset only — no secondary degradations
         color_degradations = []
         for deg in color_degs:
-            delta_l = _param_nominal(deg["params"], "delta_e")
+            resolved_params = resolve_jitter(deg["params"], layout_rng)
+            delta_l = resolved_params["delta_e"]
             degraded_color = _shift_color_lab(target_color, delta_l)
             color_degradations.append({
                 "id": deg["id"],
                 "magnitude": deg["magnitude"],
                 "layer": deg.get("layer", "html"),
-                "params": deg["params"],
+                "params": resolved_params,
                 "degraded_value": degraded_color,
                 "secondary_degs": [],
             })
@@ -549,13 +552,14 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
         # 1. Primary spec: scale_error only
         degradations = []
         for deg in scale_degs:
-            error_pct = _param_nominal(deg["params"], "scale_error_pct")
+            resolved_params = resolve_jitter(deg["params"], layout_rng)
+            error_pct = resolved_params["scale_error_pct"]
             degraded_size = max(12, min(200, int(round(target_size * (1 + error_pct / 100)))))
             degradations.append({
                 "id": deg["id"],
                 "magnitude": deg["magnitude"],
                 "layer": deg.get("layer", "html"),
-                "params": deg["params"],
+                "params": resolved_params,
                 "degraded_value": degraded_size,
                 "secondary_degs": [],
             })
@@ -939,12 +943,13 @@ def _letter_spacing_manifest(layouts: list[LayoutDefinition], deg_configs: list[
 
         primary_degs = []
         for deg in three_levels:
-            wrong_px = _param_nominal(deg["params"], "letter_spacing_px")
+            resolved_params = resolve_jitter(deg["params"], layout_rng)
+            wrong_px = resolved_params["letter_spacing_px"]
             primary_degs.append({
                 "id": deg["id"],
                 "magnitude": deg["magnitude"],
                 "layer": deg.get("layer", "html"),
-                "params": deg["params"],
+                "params": resolved_params,
                 "degraded_value": f"{wrong_px}px",
                 "secondary_degs": [],
             })
@@ -1020,12 +1025,13 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
         # 1. Primary spec: rotation_error only
         degradations = []
         for deg in rot_degs:
-            error_deg = _param_nominal(deg["params"], "angle_deg")
+            resolved_params = resolve_jitter(deg["params"], layout_rng)
+            error_deg = resolved_params["angle_deg"]
             degradations.append({
                 "id": deg["id"],
                 "magnitude": deg["magnitude"],
                 "layer": deg.get("layer", "html"),
-                "params": deg["params"],
+                "params": resolved_params,
                 "degraded_value": float(target_deg + error_deg),
                 "secondary_degs": [],
             })
@@ -1198,25 +1204,51 @@ async def generate_stimuli(
                     base_errors = src_r.errors + gt_r.errors
 
                     for deg in spec.degradations:
+                        # Pre-resolve secondary deg jitter so both the renderer and the
+                        # manifest record see the exact same values (not re-sampled later).
+                        resolved_secondary = [
+                            {**s, "params": resolve_jitter(s["params"])}
+                            for s in deg.get("secondary_degs", [])
+                        ]
+
                         deg_styles = _apply_style_change(
                             correct_styles, spec.target_role, spec.edit_property, deg["degraded_value"]
                         )
-                        if deg.get("secondary_degs"):
+                        if resolved_secondary:
                             deg_styles = _apply_secondary_degs_to_styles(
-                                deg_styles, spec.target_role, deg["secondary_degs"]
+                                deg_styles, spec.target_role, resolved_secondary
                             )
                         deg_html = layout.html_builder(contents, deg_styles, bg)
                         deg_r = await renderer.render_html_string(
                             deg_html, image_dir / f"{spec.stimulus_id}_{deg['magnitude']}.png"
                         )
-                        if deg.get("secondary_degs"):
-                            _apply_image_layer_secondary_degs(deg_r.image_path, deg["secondary_degs"])
+                        if resolved_secondary:
+                            _apply_image_layer_secondary_degs(deg_r.image_path, resolved_secondary)
+
+                        # Exact params: for secondary-dim stimuli the manifest dimension
+                        # matches the secondary deg; use the pre-resolved params from that
+                        # entry.  For primary-dim stimuli params are already scalar (resolved
+                        # by resolve_jitter in the manifest builder).
+                        if resolved_secondary:
+                            exact_params = next(
+                                (s["params"] for s in resolved_secondary
+                                 if s.get("dimension") == spec.deg_dimension),
+                                resolved_secondary[0]["params"],
+                            )
+                        else:
+                            exact_params = deg["params"]
 
                         record: dict = {
                             "id": f"{spec.stimulus_id}_{deg['magnitude']}",
+                            "stimulus_id": f"{spec.stimulus_id}_{deg['magnitude']}",
                             "edit_type": spec.edit_type,
+                            "edit_id": spec.stimulus_id,
                             "layout": spec.layout_name,
                             "layout_difficulty": layout.difficulty,
+                            "template": {
+                                "template_id": layout.id,
+                                "difficulty_tier": layout.difficulty,
+                            },
                             "target_role": spec.target_role,
                             "edit_instruction": instruction,
                             "edit": {
@@ -1229,7 +1261,7 @@ async def generate_stimuli(
                                 "id": deg["id"],
                                 "magnitude": deg["magnitude"],
                                 "layer": deg["layer"],
-                                "params": deg["params"],
+                                "params": exact_params,
                                 "degraded_value": deg["degraded_value"],
                                 "secondary_degs": [s["id"] for s in deg.get("secondary_degs", [])],
                             },
@@ -1247,9 +1279,15 @@ async def generate_stimuli(
                         # Pixel-perfect entry: degraded image IS the ground truth.
                         pixel_perfect_record: dict = {
                             "id": f"{spec.stimulus_id}_pixel_perfect",
+                            "stimulus_id": f"{spec.stimulus_id}_pixel_perfect",
                             "edit_type": spec.edit_type,
+                            "edit_id": spec.stimulus_id,
                             "layout": spec.layout_name,
                             "layout_difficulty": layout.difficulty,
+                            "template": {
+                                "template_id": layout.id,
+                                "difficulty_tier": layout.difficulty,
+                            },
                             "target_role": spec.target_role,
                             "edit_instruction": instruction,
                             "edit": {
@@ -1277,9 +1315,15 @@ async def generate_stimuli(
                         # Noop entry: degraded image IS the source (no edit applied at all).
                         noop_record: dict = {
                             "id": f"{spec.stimulus_id}_noop",
+                            "stimulus_id": f"{spec.stimulus_id}_noop",
                             "edit_type": spec.edit_type,
+                            "edit_id": spec.stimulus_id,
                             "layout": spec.layout_name,
                             "layout_difficulty": layout.difficulty,
+                            "template": {
+                                "template_id": layout.id,
+                                "difficulty_tier": layout.difficulty,
+                            },
                             "target_role": spec.target_role,
                             "edit_instruction": instruction,
                             "edit": {

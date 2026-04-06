@@ -22,13 +22,9 @@ prompts:
         text_accuracy — is the text content correct in wording, spelling, and case?
           1 = wrong or missing    5 = exact and correct
 
-        visual_consistency — do the edited elements visually integrate with the surrounding image?
-          Consider: font style/weight/size match, color blending, alignment, anti-aliasing, halos, artefacts.
-          5 = perfect integration: matching font, size, color, alignment; no visible artefacts
-          4 = very good integration with only a tiny mismatch
-          3 = visible mismatch (slight halo, mild misalignment, style drift)
-          2 = obvious halo, style mismatch, or blurring
-          1 = pasted-on appearance, clearly misaligned, or severely artefacted
+        visual_consistency — did the edit preserve all visual properties that were NOT part of the requested change?
+          Consider: any unintended alterations to font style/weight/size, color, alignment, spacing, background, anti-aliasing; introduced artefacts such as halos, blurring, or distortion.
+          5 = only the requested property changed; everything else is pixel-identical    1 = widespread collateral damage — properties far beyond the requested change are altered or severely artefacted
 
         layout_preservation — did all non-target areas of the image remain unchanged?
           1 = large portions changed unnecessarily  5 = non-target areas fully preserved
@@ -38,12 +34,13 @@ prompts:
 
       Return ONLY this exact JSON object:
       {
-        "errors_noticed": "<note any errors, artefacts, or issues you observe — empty string if none>",
+        "analysis": "<describe what the edit did, how well it matches the instruction, and any artefacts or issues you observe>",
         "instruction_following": <integer 1-5>,
         "text_accuracy": <integer 1-5>,
         "visual_consistency": <integer 1-5>,
         "layout_preservation": <integer 1-5>,
-        "overall_quality": <integer 1-5>
+        "overall_quality": <integer 1-5>,
+        "errors_noticed": "<brief list of errors or artefacts from your analysis above — empty string if none>"
       }
     notes: "Experiment 2: instruction-following evaluation. Inputs: source image + edit instruction + degraded result image."
     model_hint: "gpt-4o"

@@ -30,21 +30,34 @@ _CASE_ERROR_RANK = {"first_char_flip": 1, "all_caps": 2, "all_lower": 2}
 _FONT_WEIGHT_MAP = {"light": 300, "normal": 400, "medium": 500, "bold": 700}
 
 
+def _midpoint(params: dict, key: str, default: float = 0.0) -> float:
+    """Return params[key] if present, else midpoint of params[min_key]/params[max_key]."""
+    if key in params:
+        return float(params[key])
+    min_val = params.get(f"min_{key}", default)
+    max_val = params.get(f"max_{key}", default)
+    return float((min_val + max_val) / 2)
+
+
 def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
-    """Extract a single numeric severity value from degradation params."""
+    """Extract a single numeric severity value from degradation params.
+
+    Handles both exact values and jitter-range params (min_X / max_X) by
+    taking the midpoint of the range when the exact key is absent.
+    """
     if dimension == "color_offset":
-        return float(params.get("delta_e", 0))
+        return _midpoint(params, "delta_e")
 
     elif dimension == "position_offset":
-        x = params.get("offset_x_px", 0)
-        y = params.get("offset_y_px", 0)
+        x = _midpoint(params, "offset_x_px")
+        y = _midpoint(params, "offset_y_px")
         return float((x ** 2 + y ** 2) ** 0.5)
 
     elif dimension == "scale_error":
-        return abs(float(params.get("scale_error_pct", 0)))
+        return abs(_midpoint(params, "scale_error_pct"))
 
     elif dimension == "rotation":
-        return abs(float(params.get("angle_deg", 0)))
+        return abs(_midpoint(params, "angle_deg"))
 
     elif dimension == "font_weight":
         fw = params.get("font_weight", 400)
@@ -60,10 +73,11 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
         )
 
     elif dimension == "letter_spacing":
-        return abs(float(params.get("letter_spacing_px", 0)))
+        return abs(_midpoint(params, "letter_spacing_px"))
 
     elif dimension == "opacity":
-        return round(1.0 - float(params.get("opacity", 1.0)), 4)
+        mid_op = _midpoint(params, "opacity", default=1.0)
+        return round(1.0 - mid_op, 4)
 
     elif dimension == "char_substitution":
         return float(params.get("num_substitutions", 0))
@@ -381,13 +395,10 @@ def _pick_example_stimuli(
         is visible.
 
     *Secondary* samples (``sample_type="secondary"``):
-        Up to ``n_secondary`` stimuli from the same dimension but a
-        *different* edit type, stratified across magnitude (low / medium /
-        high) where possible.
-
-    For dimensions with no primary edit type all available stimuli are
-    treated as secondary and the original anchor-plus-random selection
-    is used.
+        Up to ``n_secondary`` stimuli drawn from **all** dimensions (not
+        just the one being plotted), stratified across magnitude tertiles.
+        This lets secondary degradations (blur, noise, jpeg, etc.) appear
+        as context samples even though they don't get their own gap plots.
 
     Returns a list of dicts with keys:
         stimulus_id, sample_type, edit_type, magnitude_label,
@@ -396,25 +407,34 @@ def _pick_example_stimuli(
     """
     import random
 
-    filt = df["degradation_dimension"] == dimension
-    if vlm is not None:
-        filt &= df["model"] == vlm
+    # Model filter applied globally
+    vlm_filt = (df["model"] == vlm) if vlm is not None else pd.Series(True, index=df.index)
 
-    sub_e1 = df[filt & (df["experiment"] == "experiment_1")].copy()
-    sub_e2 = df[filt & (df["experiment"] == "experiment_2")].copy()
+    # Dimension-specific rows (for in-dim selection)
+    dim_filt = vlm_filt & (df["degradation_dimension"] == dimension)
+    sub_e1 = df[dim_filt & (df["experiment"] == "experiment_1")].copy()
+    sub_e2 = df[dim_filt & (df["experiment"] == "experiment_2")].copy()
 
-    all_sids = set(sub_e1["stimulus_id"]).union(sub_e2["stimulus_id"])
-    sids_with_meta = {sid for sid in all_sids if sid in manifest_index}
-    if not sids_with_meta:
+    # All-dimension rows (for secondary pool and score lookups)
+    all_e1 = df[vlm_filt & (df["experiment"] == "experiment_1")].copy()
+    all_e2 = df[vlm_filt & (df["experiment"] == "experiment_2")].copy()
+
+    dim_sids = set(sub_e1["stimulus_id"]).union(sub_e2["stimulus_id"])
+    all_sids = set(all_e1["stimulus_id"]).union(all_e2["stimulus_id"])
+
+    dim_sids_meta = {sid for sid in dim_sids if sid in manifest_index}
+    all_sids_meta = {sid for sid in all_sids if sid in manifest_index}
+
+    if not dim_sids_meta and not all_sids_meta:
         return []
 
-    # Build magnitude map and edit_type map per stimulus
+    # Build magnitude map and edit_type map for ALL stimuli
     mag_map: dict[str, float] = {}
     et_map: dict[str, str] = {}
-    for sid in sids_with_meta:
-        row = sub_e2[sub_e2["stimulus_id"] == sid]
+    for sid in all_sids_meta:
+        row = all_e2[all_e2["stimulus_id"] == sid]
         if row.empty:
-            row = sub_e1[sub_e1["stimulus_id"] == sid]
+            row = all_e1[all_e1["stimulus_id"] == sid]
         if not row.empty:
             mag_map[sid] = float(row["numeric_magnitude"].iloc[0])
             et_map[sid] = str(row["edit_type"].iloc[0])
@@ -426,18 +446,17 @@ def _pick_example_stimuli(
 
     # ------------------------------------------------------------------ #
     # In-dimension: one sample per unique magnitude for the primary type  #
+    # (only from the dimension being plotted)                             #
     # ------------------------------------------------------------------ #
     in_dim_sids: list[str] = []
     if primary_et is not None:
-        # Group by magnitude; pick one sid per bucket (prefer exp2 data)
         mag_to_sids: dict[float, list[str]] = {}
-        for sid, mag in mag_map.items():
-            if et_map.get(sid) == primary_et:
-                mag_to_sids.setdefault(mag, []).append(sid)
+        for sid in dim_sids_meta:
+            if sid in mag_map and et_map.get(sid) == primary_et:
+                mag_to_sids.setdefault(mag_map[sid], []).append(sid)
 
         for mag in sorted(mag_to_sids):
             bucket = mag_to_sids[mag]
-            # Prefer a stimulus that has exp2 data
             has_e2 = [s for s in bucket
                       if not sub_e2[sub_e2["stimulus_id"] == s].empty]
             chosen_sid = has_e2[0] if has_e2 else bucket[0]
@@ -446,51 +465,35 @@ def _pick_example_stimuli(
     in_dim_set = set(in_dim_sids)
 
     # ------------------------------------------------------------------ #
-    # Secondary: up to n_secondary from different edit types              #
+    # Secondary: up to n_secondary from ALL dimensions (any edit type),  #
+    # excluding in-dim picks, stratified by magnitude tertile            #
     # ------------------------------------------------------------------ #
     secondary_pool = [
         sid for sid in mag_map
-        if sid not in in_dim_set
-        and mag_map[sid] > 0
-        and (primary_et is None or et_map.get(sid) != primary_et)
+        if sid not in in_dim_set and mag_map[sid] > 0
     ]
     secondary_pool_sorted = sorted(secondary_pool, key=lambda s: mag_map[s])
     total_sec = len(secondary_pool_sorted)
 
-    if primary_et is None:
-        # No primary — fall back to anchor + random from the whole pool
-        if total_sec == 1:
-            anchor_indices = [0]
-        elif total_sec == 2:
-            anchor_indices = [0, total_sec - 1]
-        else:
-            anchor_indices = [0, total_sec // 2, total_sec - 1]
-        anchor_sids = [secondary_pool_sorted[i] for i in anchor_indices]
-        remaining = [s for s in secondary_pool_sorted if s not in set(anchor_sids)]
-        extra = random.sample(remaining, min(max(0, n_secondary - len(anchor_sids)), len(remaining)))
-        secondary_sids = sorted(set(anchor_sids) | set(extra), key=lambda s: mag_map[s])
+    if total_sec == 0:
+        secondary_sids: list[str] = []
+    elif total_sec <= n_secondary:
+        secondary_sids = secondary_pool_sorted
     else:
-        # Stratified by magnitude tertile
-        if total_sec == 0:
-            secondary_sids = []
-        elif total_sec <= n_secondary:
-            secondary_sids = secondary_pool_sorted
-        else:
-            lo = secondary_pool_sorted[: total_sec // 3]
-            mid = secondary_pool_sorted[total_sec // 3 : 2 * total_sec // 3]
-            hi = secondary_pool_sorted[2 * total_sec // 3 :]
-            chosen_sec: list[str] = []
-            for bucket in (lo, mid, hi):
-                k = max(1, n_secondary // 3)
-                chosen_sec.extend(random.sample(bucket, min(k, len(bucket))))
-            # top up if slots remain
-            picked = set(chosen_sec)
-            remaining = [s for s in secondary_pool_sorted if s not in picked]
-            while len(chosen_sec) < n_secondary and remaining:
-                s = random.choice(remaining)
-                chosen_sec.append(s)
-                remaining.remove(s)
-            secondary_sids = sorted(chosen_sec[:n_secondary], key=lambda s: mag_map[s])
+        lo = secondary_pool_sorted[: total_sec // 3]
+        mid_pool = secondary_pool_sorted[total_sec // 3 : 2 * total_sec // 3]
+        hi = secondary_pool_sorted[2 * total_sec // 3 :]
+        chosen_sec: list[str] = []
+        for bucket in (lo, mid_pool, hi):
+            k = max(1, n_secondary // 3)
+            chosen_sec.extend(random.sample(bucket, min(k, len(bucket))))
+        picked = set(chosen_sec)
+        remaining = [s for s in secondary_pool_sorted if s not in picked]
+        while len(chosen_sec) < n_secondary and remaining:
+            s = random.choice(remaining)
+            chosen_sec.append(s)
+            remaining.remove(s)
+        secondary_sids = sorted(chosen_sec[:n_secondary], key=lambda s: mag_map[s])
 
     # ------------------------------------------------------------------ #
     # Assign magnitude labels                                             #
@@ -512,7 +515,7 @@ def _pick_example_stimuli(
 
     def _build_entry(sid: str, sample_type: str) -> dict:
         m = manifest_index[sid]
-        e1_rows = sub_e1[sub_e1["stimulus_id"] == sid]
+        e1_rows = all_e1[all_e1["stimulus_id"] == sid]
         e1: dict = {}
         if not e1_rows.empty:
             r = e1_rows.iloc[0]
@@ -521,7 +524,7 @@ def _pick_example_stimuli(
                 "detected_difference": r.get("detected_difference"),
                 "description": r.get("exp1_description") or "",
             }
-        e2_rows = sub_e2[sub_e2["stimulus_id"] == sid]
+        e2_rows = all_e2[all_e2["stimulus_id"] == sid]
         e2: dict = {}
         if not e2_rows.empty:
             r = e2_rows.iloc[0]

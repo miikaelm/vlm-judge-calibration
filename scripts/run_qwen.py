@@ -273,6 +273,7 @@ def _build_result_record(
             "layout_preservation": _clamp_score(parsed.get("layout_preservation")) if parsed else None,
             "overall_quality": _clamp_score(parsed.get("overall_quality")) if parsed else None,
             "errors_noticed": parsed.get("errors_noticed", "") if parsed else "",
+            "analysis": parsed.get("analysis", "") if parsed else "",
         })
     else:  # experiment_1
         detected: bool | None = None

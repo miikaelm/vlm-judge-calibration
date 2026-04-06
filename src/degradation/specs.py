@@ -3,19 +3,28 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-def resolve_jitter(params: dict) -> dict:
+def resolve_jitter(params: dict, rng: random.Random | None = None) -> dict:
     """Resolve min_X / max_X pairs by sampling uniformly, returning a new dict.
 
     Any key pair like ``min_foo`` / ``max_foo`` is replaced by a single ``foo``
     sampled from ``uniform(min_foo, max_foo)``.  All other keys pass through
     unchanged.  The original dict is not modified.
+
+    Parameters
+    ----------
+    params:
+        Degradation parameter dict, possibly containing min_/max_ range pairs.
+    rng:
+        Optional seeded :class:`random.Random` instance for reproducible sampling.
+        When ``None`` (default), the module-level ``random`` functions are used.
     """
     mins = {k[4:]: v for k, v in params.items() if k.startswith("min_")}
     maxs = {k[4:]: v for k, v in params.items() if k.startswith("max_")}
     resolved = dict(params)
+    _uniform = rng.uniform if rng is not None else random.uniform
     for key in mins:
         if key in maxs:
-            resolved[key] = random.uniform(mins[key], maxs[key])
+            resolved[key] = _uniform(mins[key], maxs[key])
             del resolved[f"min_{key}"]
             del resolved[f"max_{key}"]
     return resolved

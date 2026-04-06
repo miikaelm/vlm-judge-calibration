@@ -70,6 +70,15 @@ _DISCRETE_DIMENSIONS = [
 
 _ALL_DIMENSIONS = _CONTINUOUS_DIMENSIONS + _DISCRETE_DIMENSIONS
 
+# Dimensions that represent actual design-edit degradations and get exp-gap
+# plots.  Image-level secondary degradations (blur, noise, jpeg) are excluded
+# from the gap analysis but can still appear as sample panels inside other
+# plots' example rows.
+_EXP_GAP_DIMENSIONS = [
+    d for d in _ALL_DIMENSIONS
+    if d not in {"gaussian_noise", "jpeg_compression", "blur"}
+]
+
 _EXP2_SCORE_COLS = [
     "overall_quality",
     "instruction_following",
@@ -197,7 +206,7 @@ def run_analysis(
         # ------------------------------------------------------------------
         if has_exp1 and has_exp2:
             print(f"[{vlm}] Exp1 vs Exp2 gap curves ...")
-            for dim in _ALL_DIMENSIONS:
+            for dim in _EXP_GAP_DIMENSIONS:
                 if dim not in available_dims:
                     continue
                 fig = plot_exp_gap(df, dim, vlm=vlm, manifest_dir=manifest_dir)
