@@ -244,6 +244,23 @@ class StimulusSpec:
 
 
 # ---------------------------------------------------------------------------
+# Degradation config helpers
+# ---------------------------------------------------------------------------
+
+def _dedup_by_magnitude(deg_list: list[dict], rng: random.Random) -> list[dict]:
+    """Keep exactly one config per magnitude level, chosen randomly.
+
+    When multiple configs share the same magnitude (e.g. rotation_cw_small and
+    rotation_ccw_small both have magnitude='small'), only one is kept so that
+    stimulus IDs and image filenames remain unique.
+    """
+    by_mag: dict[str, list[dict]] = {}
+    for d in deg_list:
+        by_mag.setdefault(d["magnitude"], []).append(d)
+    return [rng.choice(candidates) for candidates in by_mag.values()]
+
+
+# ---------------------------------------------------------------------------
 # Secondary degradation helpers
 # ---------------------------------------------------------------------------
 
@@ -609,7 +626,7 @@ def _scale_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict], rn
 
         # 1. Primary spec: scale_error only
         degradations = []
-        for deg in scale_degs:
+        for deg in _dedup_by_magnitude(scale_degs, layout_rng):
             resolved_params = resolve_jitter(deg["params"], layout_rng)
             error_pct = resolved_params["scale_error_pct"]
             degraded_size = max(12, min(200, int(round(target_size * (1 + error_pct / 100)))))
@@ -1082,7 +1099,7 @@ def _rotation_manifest(layouts: list[LayoutDefinition], deg_configs: list[dict],
 
         # 1. Primary spec: rotation_error only
         degradations = []
-        for deg in rot_degs:
+        for deg in _dedup_by_magnitude(rot_degs, layout_rng):
             resolved_params = resolve_jitter(deg["params"], layout_rng)
             error_deg = resolved_params["angle_deg"]
             degradations.append({
@@ -1320,6 +1337,15 @@ async def generate_stimuli(
     image_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = output_dir / "manifest.jsonl"
 
+    # Load already-written IDs so resume runs don't append duplicates.
+    existing_ids: set[str] = set()
+    if jsonl_path.exists():
+        with jsonl_path.open(encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line:
+                    existing_ids.add(json.loads(_line)["id"])
+
     n = len(specs)
     n_ok = n_skip = n_fail = 0
 
@@ -1427,7 +1453,9 @@ async def generate_stimuli(
                         if all_errors:
                             record["render_errors"] = all_errors
 
-                        f.write(json.dumps(record) + "\n")
+                        if record["id"] not in existing_ids:
+                            f.write(json.dumps(record) + "\n")
+                            existing_ids.add(record["id"])
 
                     if spec.is_primary:
                         # Pixel-perfect entry: degraded image IS the ground truth.
@@ -1464,7 +1492,9 @@ async def generate_stimuli(
                         }
                         if base_errors:
                             pixel_perfect_record["render_errors"] = base_errors
-                        f.write(json.dumps(pixel_perfect_record) + "\n")
+                        if pixel_perfect_record["id"] not in existing_ids:
+                            f.write(json.dumps(pixel_perfect_record) + "\n")
+                            existing_ids.add(pixel_perfect_record["id"])
 
                         # Noop entry: degraded image IS the source (no edit applied at all).
                         noop_record: dict = {
@@ -1500,7 +1530,9 @@ async def generate_stimuli(
                         }
                         if base_errors:
                             noop_record["render_errors"] = base_errors
-                        f.write(json.dumps(noop_record) + "\n")
+                        if noop_record["id"] not in existing_ids:
+                            f.write(json.dumps(noop_record) + "\n")
+                            existing_ids.add(noop_record["id"])
 
                     extra = " + pixel_perfect + noop" if spec.is_primary else ""
                     print(f"  [{i}/{n}] OK: {spec.stimulus_id} ({len(spec.degradations)} records{extra})")

@@ -125,6 +125,43 @@ def _make_client(model: str, prompt_variant: str) -> Any:
     return TrackedOpenAI(api_key=api_key, note=f"eval_{prompt_variant}")
 
 
+def _load_stimulus_ids(jsonl_path: Path) -> set[str]:
+    """Return the set of stimulus_ids found in a results JSONL file."""
+    ids: set[str] = set()
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                ids.add(json.loads(line)["stimulus_id"])
+    return ids
+
+
+def _resolve_entries(
+    manifest_dir: Path,
+    limit: int | None,
+    filter_ids: Path | None,
+    presampled: list[dict] | None,
+) -> list[dict]:
+    """Load and filter/sample manifest entries. If *presampled* is given, use it directly."""
+    if presampled is not None:
+        return presampled
+    entries = _load_manifest(manifest_dir)
+    if filter_ids is not None:
+        allowed = _load_stimulus_ids(filter_ids)
+        before = len(entries)
+        seen: set[str] = set()
+        filtered: list[dict] = []
+        for e in entries:
+            if e["id"] in allowed and e["id"] not in seen:
+                seen.add(e["id"])
+                filtered.append(e)
+        entries = filtered
+        print(f"[runner] --filter-ids: kept {len(entries)}/{before} stimuli from {filter_ids}")
+    elif limit is not None:
+        entries = random.sample(entries, min(limit, len(entries)))
+    return entries
+
+
 def run_evaluation(
     manifest_dir: Path,
     model: str,
@@ -133,11 +170,11 @@ def run_evaluation(
     output_path: Path = DEFAULT_RESULTS_PATH,
     parse_failures_path: Path = DEFAULT_PARSE_FAILURES_PATH,
     limit: int | None = None,
+    filter_ids: Path | None = None,
+    presampled_entries: list[dict] | None = None,
 ) -> None:
     manifest_dir = Path(manifest_dir)
-    entries = _load_manifest(manifest_dir)
-    if limit is not None:
-        entries = random.sample(entries, min(limit, len(entries)))
+    entries = _resolve_entries(manifest_dir, limit, filter_ids, presampled_entries)
 
     n = len(entries)
     print(f"[runner] Found {n} stimuli in {manifest_dir / 'manifest.jsonl'}")
@@ -224,6 +261,14 @@ def run_evaluation(
         print(f"[runner] Parse failures -> {parse_failures_path}")
 
 
+def _both_output_paths(base: Path) -> tuple[Path, Path]:
+    """Derive exp1/exp2 output paths from a base path."""
+    stem = base.stem
+    suffix = base.suffix or ".jsonl"
+    parent = base.parent
+    return parent / f"{stem}_exp1{suffix}", parent / f"{stem}_exp2{suffix}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="VLM evaluation runner")
     parser.add_argument(
@@ -234,11 +279,11 @@ def main() -> None:
         "--model", default="gpt-4o",
         help="Model name (e.g. gpt-4o) or 'dummy' for fake API",
     )
-    # --experiment 1/2 is a convenience shorthand for --prompt-variant experiment_1/2
+    # --experiment 1/2/both is a convenience shorthand for --prompt-variant experiment_1/2
     exp_group = parser.add_mutually_exclusive_group()
     exp_group.add_argument(
-        "--experiment", type=int, choices=[1, 2], default=None,
-        help="Experiment number (1=perceptual sensitivity, 2=instruction-following)",
+        "--experiment", type=str, choices=["1", "2", "both"], default=None,
+        help="Experiment to run: 1 (perceptual), 2 (instruction-following), or both",
     )
     exp_group.add_argument(
         "--prompt-variant", default=None,
@@ -251,15 +296,45 @@ def main() -> None:
     )
     parser.add_argument(
         "--output", default=DEFAULT_RESULTS_PATH, type=Path,
-        help="Output JSONL path (default: data/results.jsonl)",
+        help="Output JSONL path (default: data/results.jsonl). "
+             "When --experiment both is used, _exp1/_exp2 suffixes are appended.",
     )
     parser.add_argument(
         "--limit", type=int, default=None,
-        help="Process only the first N stimuli",
+        help="Process only N randomly-sampled stimuli. "
+             "When --experiment both is used, the same sample is used for both.",
+    )
+    parser.add_argument(
+        "--filter-ids", type=Path, default=None,
+        help="Path to a results JSONL (e.g. exp1.jsonl); only stimuli whose "
+             "stimulus_id appears in that file will be processed. "
+             "Mutually exclusive with --limit.",
     )
     args = parser.parse_args()
 
-    # Resolve experiment variant from either flag (default: experiment_2)
+    run_both = args.experiment == "both"
+
+    if run_both:
+        # Sample once so both experiments see identical stimuli
+        manifest_dir = Path(args.manifest)
+        presampled = _resolve_entries(manifest_dir, args.limit, args.filter_ids, None)
+        print(f"[runner] Running both experiments on {len(presampled)} stimuli (shared sample).")
+
+        out_exp1, out_exp2 = _both_output_paths(args.output)
+
+        for variant, out_path in [("experiment_1", out_exp1), ("experiment_2", out_exp2)]:
+            print(f"\n[runner] === {variant} -> {out_path} ===")
+            run_evaluation(
+                manifest_dir=manifest_dir,
+                model=args.model,
+                prompt_variant=variant,
+                dry_run=args.dry_run,
+                output_path=out_path,
+                presampled_entries=presampled,
+            )
+        return
+
+    # Single-experiment path
     if args.experiment is not None:
         prompt_variant = f"experiment_{args.experiment}"
     elif args.prompt_variant is not None:
@@ -274,6 +349,7 @@ def main() -> None:
         dry_run=args.dry_run,
         output_path=args.output,
         limit=args.limit,
+        filter_ids=args.filter_ids,
     )
 
 

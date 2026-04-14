@@ -7,3 +7,6 @@ __pycache__/
 *.md
 outputs/
 scripts/run_qwen_lumi.sh
+*.log
+*.csv
+*.jsonl
