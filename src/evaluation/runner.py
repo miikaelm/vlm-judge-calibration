@@ -3,7 +3,7 @@ runner.py — Evaluation runner: iterate a stimulus manifest, call the VLM, writ
 
 Results are appended immediately after each call (crash-safe).
 
-Usage:
+Standard (synchronous) usage:
     # Print planned calls, estimate cost for all models, no API calls:
     python src/evaluation/runner.py --manifest data/generated/ --model gpt-4o --dry-run
 
@@ -18,6 +18,31 @@ Usage:
 
     # Run only first 5 stimuli:
     python src/evaluation/runner.py --manifest data/generated/ --model dummy --limit 5
+
+Gemini Batch API (async, 50% cheaper, bypasses 250 req/day limit):
+    Requires: pip install google-genai
+
+    # Step 1 — build batch JSONL from manifest (test with --limit 3)
+    python src/evaluation/runner.py batch prepare \\
+        --manifest data/generated/ --model gemini-2.0-flash \\
+        --experiment 1 --limit 3 --output data/batch/input.jsonl
+
+    # Step 2 — upload and submit
+    python src/evaluation/runner.py batch submit \\
+        --input data/batch/input.jsonl --model gemini-2.0-flash
+
+    # Step 3 — check status (repeat until SUCCEEDED)
+    python src/evaluation/runner.py batch status --job batches/batch-abc123
+
+    # Step 4 — list all jobs
+    python src/evaluation/runner.py batch list
+
+    # Step 5 — fetch and parse results
+    python src/evaluation/runner.py batch fetch \\
+        --job batches/batch-abc123 \\
+        --input data/batch/input.jsonl \\
+        --experiment 1 --model gemini-2.0-flash \\
+        --output data/results_batch_exp1.jsonl
 """
 
 from __future__ import annotations
@@ -26,12 +51,13 @@ import argparse
 import json
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
-from src.api_tracker import DummyOpenAI, TrackedGemini, TrackedOpenAI, PRICING
-from src.evaluation.judge import JudgeConfig, JudgeResult, run_judge
-from src.evaluation.parser import log_parse_failure
+from api_tracker import DummyOpenAI, TrackedGemini, TrackedOpenAI, PRICING
+from evaluation.judge import JudgeConfig, JudgeResult, run_judge
+from evaluation.parser import log_parse_failure
 
 
 DEFAULT_RESULTS_PATH = Path("data/results.jsonl")
@@ -269,7 +295,136 @@ def _both_output_paths(base: Path) -> tuple[Path, Path]:
     return parent / f"{stem}_exp1{suffix}", parent / f"{stem}_exp2{suffix}"
 
 
+def _batch_main(argv: list[str]) -> None:
+    """Argument parser and dispatcher for 'batch' subcommands."""
+    import os
+    from evaluation.gemini_batch import (
+        cmd_fetch,
+        cmd_list,
+        cmd_prepare,
+        cmd_status,
+        cmd_submit,
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="runner.py batch",
+        description="Gemini Batch API commands (async, 50% cheaper than standard API)",
+    )
+    sub = parser.add_subparsers(dest="batch_cmd", required=True)
+
+    # ---- prepare ----
+    p_prep = sub.add_parser(
+        "prepare",
+        help="Build Gemini Batch API JSONL from manifest entries",
+    )
+    p_prep.add_argument("--manifest", required=True, type=Path,
+                        help="Directory with manifest.jsonl and images/")
+    p_prep.add_argument("--model", required=True,
+                        help="Gemini model name (e.g. gemini-2.0-flash)")
+    p_prep.add_argument("--experiment", required=True, choices=["1", "2"],
+                        help="Experiment number")
+    p_prep.add_argument("--output", required=True, type=Path,
+                        help="Output path for batch JSONL (e.g. data/batch/input.jsonl)")
+    p_prep.add_argument("--limit", type=int, default=None,
+                        help="Randomly sample N stimuli (omit for all)")
+    p_prep.add_argument("--filter-ids", type=Path, default=None,
+                        help="JSONL file whose stimulus_ids define the subset to use")
+    p_prep.add_argument("--temperature", type=float, default=0.0)
+    p_prep.add_argument("--max-tokens", type=int, default=1024)
+
+    # ---- submit ----
+    p_sub = sub.add_parser(
+        "submit",
+        help="Upload batch JSONL to Gemini Files API and create a batch job",
+    )
+    p_sub.add_argument("--input", required=True, type=Path,
+                       help="Batch JSONL built by 'batch prepare'")
+    p_sub.add_argument("--model", required=True,
+                       help="Gemini model name")
+    p_sub.add_argument("--display-name", default=None,
+                       help="Human-readable name for the batch job")
+
+    # ---- status ----
+    p_stat = sub.add_parser("status", help="Check batch job status")
+    p_stat.add_argument("--job", required=True,
+                        help="Batch job name (e.g. batches/batch-abc123)")
+
+    # ---- list ----
+    sub.add_parser("list", help="List all Gemini batch jobs")
+
+    # ---- fetch ----
+    p_fetch = sub.add_parser(
+        "fetch",
+        help="Download completed batch results and parse into results JSONL",
+    )
+    p_fetch.add_argument("--job", required=True,
+                         help="Batch job name (e.g. batches/batch-abc123)")
+    p_fetch.add_argument("--input", required=True, type=Path,
+                         help="Original batch JSONL (used to find the sidecar manifest)")
+    p_fetch.add_argument("--experiment", required=True, choices=["1", "2"],
+                         help="Experiment number")
+    p_fetch.add_argument("--model", required=True,
+                         help="Gemini model name (for cost logging)")
+    p_fetch.add_argument("--output", required=True, type=Path,
+                         help="Results JSONL output path")
+    p_fetch.add_argument("--parse-failures", type=Path,
+                         default=DEFAULT_PARSE_FAILURES_PATH,
+                         help="Parse failures log path")
+
+    args = parser.parse_args(argv)
+
+    api_key: str = os.environ.get("GEMINI_API_KEY", "")
+
+    # Commands that need an API key
+    if args.batch_cmd in ("submit", "status", "list", "fetch") and not api_key:
+        print("ERROR: GEMINI_API_KEY environment variable not set.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.batch_cmd == "prepare":
+        prompt_variant = f"experiment_{args.experiment}"
+        entries = _resolve_entries(args.manifest, args.limit, args.filter_ids, None)
+        cmd_prepare(
+            entries=entries,
+            manifest_dir=args.manifest,
+            prompt_variant=prompt_variant,
+            output_path=args.output,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
+
+    elif args.batch_cmd == "submit":
+        cmd_submit(
+            jsonl_path=args.input,
+            model=args.model,
+            api_key=api_key,
+            display_name=args.display_name,
+        )
+
+    elif args.batch_cmd == "status":
+        cmd_status(job_name=args.job, api_key=api_key)
+
+    elif args.batch_cmd == "list":
+        cmd_list(api_key=api_key)
+
+    elif args.batch_cmd == "fetch":
+        prompt_variant = f"experiment_{args.experiment}"
+        cmd_fetch(
+            job_name=args.job,
+            jsonl_path=args.input,
+            prompt_variant=prompt_variant,
+            model=args.model,
+            output_path=args.output,
+            api_key=api_key,
+            parse_failures_path=args.parse_failures,
+        )
+
+
 def main() -> None:
+    # Dispatch to batch subcommand handler if first arg is 'batch'
+    if len(sys.argv) > 1 and sys.argv[1] == "batch":
+        _batch_main(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="VLM evaluation runner")
     parser.add_argument(
         "--manifest", required=True, type=Path,

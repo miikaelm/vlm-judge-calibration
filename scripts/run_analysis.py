@@ -32,13 +32,11 @@ import matplotlib.pyplot as plt
 _repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_repo_root / "src"))
 
-from analysis.curves import load_results, load_noop_results, plot_sensitivity_curve, plot_exp_gap
+from analysis.curves import load_results, load_noop_results, plot_sensitivity_curve, plot_sensitivity_curve_exp1, plot_exp_gap
 from analysis.heatmap import (
-    plot_detection_heatmap,
+    plot_detection_heatmap_by_dim,
     plot_score_heatmap,
-    plot_perfect_detection_heatmap,
     plot_perfect_score_heatmap,
-    plot_noop_detection_heatmap,
     plot_noop_score_heatmap,
 )
 
@@ -177,10 +175,18 @@ def run_analysis(
         vdir = vlm_dir(vlm)
 
         # ------------------------------------------------------------------
-        # 1. Sensitivity curves (Exp2 overall_quality, one per dimension)
+        # 1. Sensitivity curves
         # ------------------------------------------------------------------
+        if has_exp1:
+            print(f"[{vlm}] Sensitivity curves (Exp1 — detection rate) ...")
+            for dim in _ALL_DIMENSIONS:
+                if dim not in available_dims:
+                    continue
+                fig = plot_sensitivity_curve_exp1(df, dim, vlm)
+                save_fig(fig, vdir / "sensitivity" / "exp1" / f"{dim}.png")
+
         if has_exp2:
-            print(f"[{vlm}] Sensitivity curves ...")
+            print(f"[{vlm}] Sensitivity curves (Exp2 — overall_quality) ...")
             for dim in _ALL_DIMENSIONS:
                 if dim not in available_dims:
                     continue
@@ -212,8 +218,8 @@ def run_analysis(
         # 4. Heatmaps
         # ------------------------------------------------------------------
         if has_exp1:
-            print(f"[{vlm}] Detection heatmap (Exp1) ...")
-            fig = plot_detection_heatmap(df, vlm)
+            print(f"[{vlm}] Detection heatmap by dimension (Exp1) ...")
+            fig = plot_detection_heatmap_by_dim(df, vlm)
             save_fig(fig, vdir / "heatmaps" / "detection_rate.png")
 
         if has_exp2:
@@ -223,30 +229,19 @@ def run_analysis(
                 save_fig(fig, vdir / "heatmaps" / f"score_{score_col}.png")
 
         # ------------------------------------------------------------------
-        # 5. Perfect-edit heatmaps (magnitude = 0)
+        # 5. Perfect-edit heatmaps (magnitude = 0) — Exp2 only
         # ------------------------------------------------------------------
-        if has_exp1:
-            print(f"[{vlm}] Perfect-edit false positive heatmap (Exp1) ...")
-            fig = plot_perfect_detection_heatmap(df, vlm)
-            save_fig(fig, vdir / "heatmaps" / "perfect_false_positive_rate.png")
-
         if has_exp2:
             print(f"[{vlm}] Perfect-edit score heatmap (Exp2) ...")
             fig = plot_perfect_score_heatmap(df, vlm)
             save_fig(fig, vdir / "heatmaps" / "perfect_scores.png")
 
         # ------------------------------------------------------------------
-        # 6. Noop heatmaps (image unchanged)
+        # 6. Noop heatmaps (image unchanged) — Exp2 only
         # ------------------------------------------------------------------
         if not noop_df.empty:
-            noop_has_exp1 = "experiment_1" in noop_df["experiment"].values
             noop_has_exp2 = "experiment_2" in noop_df["experiment"].values
             noop_vlm = noop_df[noop_df["model"] == vlm]
-
-            if noop_has_exp1 and not noop_vlm[noop_vlm["experiment"] == "experiment_1"].empty:
-                print(f"[{vlm}] Noop false positive heatmap (Exp1) ...")
-                fig = plot_noop_detection_heatmap(noop_vlm, vlm)
-                save_fig(fig, vdir / "heatmaps" / "noop_false_positive_rate.png")
 
             if noop_has_exp2 and not noop_vlm[noop_vlm["experiment"] == "experiment_2"].empty:
                 print(f"[{vlm}] Noop score heatmap (Exp2) ...")

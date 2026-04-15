@@ -150,6 +150,67 @@ def plot_detection_heatmap(
     return fig
 
 
+def plot_detection_heatmap_by_dim(
+    df: pd.DataFrame,
+    vlm: str,
+    *,
+    experiment: str = "experiment_1",
+    exclude_perfect: bool = True,
+    figsize: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Bar chart of Exp1 detection rate by degradation dimension only.
+
+    Edit type is intentionally excluded — Exp1 measures perceptual sensitivity
+    to the degradation itself, independent of which edit type was applied.
+    """
+    sub = df[
+        (df["model"] == vlm)
+        & (df["experiment"] == experiment)
+        & df["parse_success"]
+        & df["detected_difference"].notna()
+    ].copy()
+    if exclude_perfect:
+        sub = sub[sub["numeric_magnitude"] > 0]
+    sub["detected"] = sub["detected_difference"].astype(bool).astype(float)
+
+    dims = _present_dims(sub, _DIMENSION_ORDER)
+
+    if sub.empty:
+        fig, ax = plt.subplots(figsize=figsize or (8, 4))
+        ax.text(0.5, 0.5, "No Exp1 data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(f"Exp1 detection rate — model: {vlm}")
+        return fig
+
+    det_rates = [sub[sub["degradation_dimension"] == d]["detected"].mean() for d in dims]
+    ns = [int((sub["degradation_dimension"] == d).sum()) for d in dims]
+
+    if figsize is None:
+        figsize = (max(8, len(dims) * 1.1), 4)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    colors = ["#1a9850" if v > 0.7 else "#fee08b" if v > 0.4 else "#d73027"
+              for v in det_rates]
+    bars = ax.bar(range(len(dims)), det_rates, color=colors, edgecolor="white", linewidth=0.8)
+
+    for bar, val, n in zip(bars, det_rates, ns):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                f"{val:.0%}\n(n={n})", ha="center", va="bottom", fontsize=8)
+
+    ax.set_xticks(range(len(dims)))
+    ax.set_xticklabels([d.replace("_", "\n") for d in dims], fontsize=9)
+    ax.set_ylim(0, 1.15)
+    ax.set_ylabel("Detection rate", fontsize=9)
+    ax.axhline(0.0, color="black", linewidth=0.5)
+    suffix = " (mag > 0 only)" if exclude_perfect else ""
+    ax.set_title(
+        f"Exp1 detection rate by degradation dimension — model: {vlm}{suffix}",
+        fontsize=10,
+    )
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
 def plot_score_heatmap(
     df: pd.DataFrame,
     vlm: str,

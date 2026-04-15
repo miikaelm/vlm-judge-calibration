@@ -357,6 +357,71 @@ def plot_sensitivity_curve(
     return fig
 
 
+def plot_sensitivity_curve_exp1(
+    df: pd.DataFrame,
+    dimension: str,
+    vlm: str,
+    *,
+    figsize: tuple[float, float] = (8, 5),
+) -> plt.Figure:
+    """Plot Exp1 similarity score vs degradation magnitude for a given dimension.
+
+    Uses the continuous similarity_score from Experiment 1, which gives a
+    smoother signal than the binary detected_difference flag.
+    """
+    sub = df[
+        (df["degradation_dimension"] == dimension)
+        & (df["model"] == vlm)
+        & (df["experiment"] == "experiment_1")
+        & df["parse_success"]
+        & df["similarity_score"].notna()
+        & (df["numeric_magnitude"] > 0)
+    ].copy()
+
+    if sub.empty:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, f"No Exp1 data for dimension={dimension!r}, model={vlm!r}",
+                ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(f"Exp1 sensitivity curve — {dimension} [{vlm}]")
+        return fig
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    grouped = (
+        sub.groupby("numeric_magnitude")["similarity_score"]
+        .agg(["mean", "sem"])
+        .reset_index()
+        .sort_values("numeric_magnitude")
+    )
+    x = grouped["numeric_magnitude"].values.astype(float)
+    y = grouped["mean"].values.astype(float)
+    yerr = np.nan_to_num(grouped["sem"].values.astype(float))
+
+    color = "steelblue"
+    ax.fill_between(x, y - yerr, y + yerr, alpha=0.2, color=color)
+    ax.scatter(x, y, s=50, zorder=5, color=color)
+
+    if len(x) >= 2:
+        deg = min(2, len(x) - 1)
+        coeffs = np.polyfit(x, y, deg)
+        x_smooth = np.linspace(x.min(), x.max(), 300)
+        y_smooth = np.polyval(coeffs, x_smooth)
+        ax.plot(x_smooth, y_smooth, color=color, linewidth=2, label="regression")
+
+    score_range = sub["similarity_score"].agg(["min", "max"])
+    y_min = max(0, score_range["min"] - 0.5)
+    y_max = min(10, score_range["max"] + 0.5)
+
+    ax.set_xlabel(_x_label(dimension))
+    ax.set_ylabel("Similarity score")
+    ax.set_title(f"Exp1 sensitivity curve — {dimension}\nmodel: {vlm}")
+    ax.set_ylim(y_min, y_max)
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Helpers for the Exp-gap example panels
 # ---------------------------------------------------------------------------

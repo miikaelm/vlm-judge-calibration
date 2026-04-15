@@ -92,8 +92,12 @@ def _append_log_row(
     prompt_tokens: int,
     completion_tokens: int,
     note: str = "",
+    discount: float = 1.0,
 ) -> None:
+    """Append a usage row to a CSV log. Pass discount=0.5 for Gemini Batch API pricing."""
     prompt_cost, completion_cost = _compute_cost(model, prompt_tokens, completion_tokens)
+    prompt_cost *= discount
+    completion_cost *= discount
     total_cost = prompt_cost + completion_cost
     total_tokens = prompt_tokens + completion_tokens
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -108,10 +112,11 @@ def _append_log_row(
             f"{prompt_cost:.6f}", f"{completion_cost:.6f}", f"{total_cost:.6f}", note,
         ])
 
+    discount_note = f" (×{discount} batch discount)" if discount != 1.0 else ""
     print(
         f"  [api_tracker] {model} | "
         f"tokens: {prompt_tokens}+{completion_tokens}={total_tokens} | "
-        f"cost: ${total_cost:.4f}"
+        f"cost: ${total_cost:.4f}{discount_note}"
     )
 
 
