@@ -318,6 +318,12 @@ def _process_stimuli(
 
     n = len(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.is_dir():
+        raise IsADirectoryError(
+            f"Output path is a directory, not a file: {output_path}\n"
+            "This can happen if a previous '--experiment both' run was given a file path as --output.\n"
+            f"Fix: rm -rf {output_path}"
+        )
     n_ok = n_fail = 0
 
     for i, record in enumerate(records, 1):
@@ -424,9 +430,10 @@ def main() -> None:
         "--experiment", choices=["1", "2", "both"], default="2",
         help="1=perceptual sensitivity, 2=instruction-following, both=run sequentially (model loaded once)",
     )
-    parser.add_argument("--output", type=Path, default=Path("data/results.jsonl"),
-                        help="Output file path (single experiment) or directory (--experiment both, writes exp1.jsonl + exp2.jsonl inside).")
-    parser.add_argument("--parse-failures", type=Path, default=Path("data/parse_failures.jsonl"))
+    parser.add_argument("--output", type=Path, default=Path("data/results"),
+                        help="Output directory. Writes exp1.jsonl / exp2.jsonl inside it.")
+    parser.add_argument("--parse-failures", type=Path, default=Path("data/parse_failures"),
+                        help="Directory for parse failure logs. Writes exp1.jsonl / exp2.jsonl inside it.")
     parser.add_argument("--limit", type=int, default=None, help="Process only the first N stimuli")
     parser.add_argument("--device", default="auto",
                         help="Device map for transformers (auto, cuda, cpu)")
@@ -446,14 +453,11 @@ def main() -> None:
 
     if args.experiment == "both":
         variants = ["experiment_1", "experiment_2"]
-        out_dir = args.output
-        output_paths = [out_dir / "exp1.jsonl", out_dir / "exp2.jsonl"]
-        pf_dir = args.parse_failures.parent / args.parse_failures.stem
-        parse_failures_paths = [pf_dir / "exp1.jsonl", pf_dir / "exp2.jsonl"]
     else:
         variants = [f"experiment_{args.experiment}"]
-        output_paths = [args.output]
-        parse_failures_paths = [args.parse_failures]
+
+    output_paths = [args.output / f"exp{v[-1]}.jsonl" for v in variants]
+    parse_failures_paths = [args.parse_failures / f"exp{v[-1]}.jsonl" for v in variants]
 
     run(
         manifest_dir=args.manifest,
