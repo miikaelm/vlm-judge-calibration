@@ -92,7 +92,7 @@ def run_judge(
     For experiment_2: sends source.png + degraded.png + the edit instruction.
     For experiment_1: sends ground_truth.png + degraded.png (no instruction).
     """
-    from src.evaluation.parser import parse_response
+    from evaluation.parser import parse_response
 
     manifest_dir = Path(manifest_dir)
 
