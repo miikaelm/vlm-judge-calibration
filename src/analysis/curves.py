@@ -3,6 +3,8 @@ curves.py — Sensitivity curves and Exp1/Exp2 gap analysis.
 
 Public API:
     load_results(results_jsonl, manifest_dir) -> pd.DataFrame
+    load_noop_results(results_jsonl, manifest_dir) -> pd.DataFrame
+    load_perfect_results(results_jsonl, manifest_dir) -> pd.DataFrame
     plot_sensitivity_curve(df, dimension, vlm) -> matplotlib.Figure
     plot_exp_gap(df, dimension) -> matplotlib.Figure
 """
@@ -31,12 +33,62 @@ _FONT_WEIGHT_MAP = {"light": 300, "normal": 400, "medium": 500, "bold": 700}
 
 
 def _midpoint(params: dict, key: str, default: float = 0.0) -> float:
-    """Return params[key] if present, else midpoint of params[min_key]/params[max_key]."""
+    """Return params[key] (resolved scalar) if present, else midpoint of min_/max_ range.
+
+    The manifest stores jitter-resolved scalars at params[key] directly, so the
+    midpoint fallback is rarely reached in practice — but is kept as a defensive
+    fallback for older manifest formats.
+    """
     if key in params:
         return float(params[key])
     min_val = params.get(f"min_{key}", default)
     max_val = params.get(f"max_{key}", default)
     return float((min_val + max_val) / 2)
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap 95% CI helper
+# ---------------------------------------------------------------------------
+
+def _bootstrap_ci(
+    values: np.ndarray,
+    n_boot: int = 1000,
+    ci: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float]:
+    """Return (lower, upper) non-parametric bootstrap CI for the mean.
+
+    Parameters
+    ----------
+    values:
+        1-D array of observations.
+    n_boot:
+        Number of bootstrap resamples.
+    ci:
+        Coverage probability (default 0.95 → 95 % CI).
+    seed:
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    (lower, upper) percentile-bootstrap CI for the mean.
+    When len(values) < 2, returns (mean, mean).
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+    if len(values) < 2:
+        m = float(np.nanmean(values)) if len(values) else float("nan")
+        return m, m
+
+    rng = np.random.default_rng(seed)
+    boot_means = np.array([
+        rng.choice(values, size=len(values), replace=True).mean()
+        for _ in range(n_boot)
+    ])
+    alpha = (1.0 - ci) / 2.0
+    lo = float(np.percentile(boot_means, 100.0 * alpha))
+    hi = float(np.percentile(boot_means, 100.0 * (1.0 - alpha)))
+    return lo, hi
 
 
 def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
@@ -59,7 +111,7 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
     elif dimension == "rotation":
         return abs(_midpoint(params, "angle_deg"))
 
-    elif dimension == "font_weight":
+    elif dimension in ("font_weight", "font_weight_light", "font_weight_heavy"):
         fw = params.get("font_weight", 400)
         if isinstance(fw, str):
             fw = _FONT_WEIGHT_MAP.get(fw.lower(), 400)
@@ -73,11 +125,11 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
         )
 
     elif dimension == "font_family":
-        # Assign perceptual distinctiveness by category: body-text categories
-        # (sans-serif, serif) score 0.5; highly distinctive categories
-        # (monospace, display/condensed) score 1.0.  This is a proxy for the
-        # true target-relative distance used at generation time, but gives a
-        # monotone ordering suitable for x-axis ranking on curves.
+        # Category distance: same-class fonts = 0.5, cross-class = 1.0.
+        # The distance is measured between the *degraded* font and the *target*
+        # font (the font that should appear in the correctly-edited image).
+        # target_font_family is injected from the manifest edit.target_value
+        # when edit.property == "font_family"; see _load_raw_results().
         _FF_CATEGORY: dict[str, str] = {
             "Arial, Helvetica, sans-serif":                              "sans_serif",
             "Verdana, Geneva, sans-serif":                               "sans_serif",
@@ -87,14 +139,24 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
             "'Courier New', Courier, monospace":                         "monospace",
             "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif": "display",
         }
-        _FF_SCORE: dict[str, float] = {
+        _FF_SAME_CROSS: dict[str, float] = {
             "sans_serif": 0.5, "serif": 0.5, "monospace": 1.0, "display": 1.0,
         }
         ff = str(params.get("font_family", ""))
         if not ff:
-            return 0.0  # empty params = pixel_perfect / no degradation
+            return 0.0  # empty params = no degradation
+
+        target_ff = str(params.get("target_font_family", ""))
+        if target_ff:
+            # Target-relative: compare degraded-font category vs target-font category
+            deg_cat = _FF_CATEGORY.get(ff, "unknown")
+            tgt_cat = _FF_CATEGORY.get(target_ff, "unknown")
+            if deg_cat != "unknown" and tgt_cat != "unknown":
+                return 0.5 if deg_cat == tgt_cat else 1.0
+            # One or both fonts unknown — fall through to degraded-only heuristic
+        # Fallback: characterise the degraded font's own category distinctiveness
         cat = _FF_CATEGORY.get(ff, "unknown")
-        return _FF_SCORE.get(cat, 0.75)
+        return _FF_SAME_CROSS.get(cat, 0.75)
 
     elif dimension == "letter_spacing":
         return abs(_midpoint(params, "letter_spacing_px"))
@@ -131,6 +193,14 @@ def _params_to_numeric_magnitude(dimension: str, params: dict) -> float:
     elif dimension == "blur":
         return float(params.get("radius", 0))
 
+    elif dimension == "alignment_error":
+        x = _midpoint(params, "offset_x_px")
+        y = _midpoint(params, "offset_y_px")
+        mag = float((x ** 2 + y ** 2) ** 0.5)
+        if mag == 0.0:
+            mag = float(params.get("alignment_error_px", 0))
+        return mag
+
     return 0.0
 
 
@@ -140,7 +210,9 @@ def _x_label(dimension: str) -> str:
         "position_offset": "Offset magnitude (px)",
         "scale_error": "Scale error (%)",
         "rotation": "Rotation (°)",
-        "font_weight": "Weight distance from 400",
+        "font_weight":       "Weight distance from 400",
+        "font_weight_light": "Weight distance from 400 (lighter ←)",
+        "font_weight_heavy": "Weight distance from 400 (heavier →)",
         "font_style": "Severity",
         "letter_spacing": "|Letter spacing| (px)",
         "opacity": "Opacity reduction",
@@ -152,6 +224,7 @@ def _x_label(dimension: str) -> str:
         "jpeg_compression": "Compression severity (100-quality)",
         "blur": "Blur radius",
         "font_family": "Category distance (0.5=same, 1.0=different)",
+        "alignment_error": "Alignment error (px)",
     }
     return labels.get(dimension, dimension)
 
@@ -206,12 +279,116 @@ def _load_raw_results(
         m = meta.get(sid, {})
         deg = m.get("degradation", {})
         tmpl = m.get("template", {})
-        params = deg.get("params", {})
+        params = dict(deg.get("params", {}))  # mutable copy
         dimension = deg.get("dimension", "unknown")
+
+        # Normalize model names that are filesystem paths (e.g. Qwen scratch paths)
+        model_name = r.get("model", "unknown")
+        if "/" in model_name or "\\" in model_name:
+            model_name = model_name.replace("\\", "/").rstrip("/").split("/")[-1]
+        # Remap legacy model cache name to canonical display name
+        if model_name == "model_cache":
+            model_name = "Qwen2.5-VL"
+
+        # Inject target_font_family for target-relative magnitude computation.
+        # When a font_family degradation is applied to a font_family edit,
+        # edit.target_value is the font the model should see in the ground truth.
+        edit_info = m.get("edit", {})
+        if dimension == "font_family" and edit_info.get("property") == "font_family":
+            target_ff = edit_info.get("target_value", "")
+            if target_ff:
+                params["target_font_family"] = target_ff
+
+        numeric_mag = _params_to_numeric_magnitude(dimension, params)
+        raw_magnitude = deg.get("magnitude", "unknown")
+
+        # Split font_weight into two monotone sub-dimensions before tier assignment.
+        # |weight − 400| is symmetric, so weight 100 and weight 700 land at the same
+        # distance from neutral but are perceptually and directionally distinct.
+        # Splitting ensures each sub-dimension has a monotone detection curve.
+        if dimension == "font_weight":
+            fw_val = params.get("font_weight", 400)
+            if isinstance(fw_val, str):
+                fw_val = _FONT_WEIGHT_MAP.get(fw_val.lower(), 400)
+            fw_val = int(fw_val)
+            if fw_val < 400:
+                dimension = "font_weight_light"   # below normal: 300, 200, 100, …
+            elif fw_val > 400:
+                dimension = "font_weight_heavy"   # above normal: 500, 600, 700, …
+            # fw_val == 400 stays as "font_weight" (no degradation; filtered downstream)
+
+        # Several dimensions store implementation-specific labels as the magnitude
+        # (font names, weight numbers, style names, percentile codes, etc.) rather
+        # than the abstract tier labels ("small", "medium", "large", …) used by all
+        # other dimensions.  Remap them here so psychometric curves and all downstream
+        # analyses share a consistent x-axis vocabulary.
+        if dimension == "font_family":
+            # Raw label = degraded font name (e.g. "arial"); remap by category distance.
+            if numeric_mag <= 0.0:
+                mag_label = raw_magnitude          # perfect edit — filtered downstream
+            elif numeric_mag <= 0.5:
+                mag_label = "medium"               # same-class font swap
+            else:
+                mag_label = "large"                # cross-class font swap
+
+        elif dimension == "font_style":
+            # Raw label = style name ("italic", "oblique", "normal", "style_*").
+            # numeric_mag: oblique → 0.5, italic/normal → 1.0.
+            if numeric_mag <= 0.0:
+                mag_label = raw_magnitude
+            elif numeric_mag <= 0.5:
+                mag_label = "medium"               # oblique (partial mismatch)
+            else:
+                mag_label = "large"                # italic or normal (full mismatch)
+
+        elif dimension in ("font_weight_light", "font_weight_heavy"):
+            # Raw label = "weight_N" (e.g. "weight_300").
+            # numeric_mag = |weight − 400| (distance from neutral, always positive).
+            # Each sub-dimension is now monotone: small/medium/large/… maps
+            # to increasing distance from 400 within a single direction.
+            if numeric_mag <= 0:
+                mag_label = raw_magnitude
+            elif numeric_mag <= 100:
+                mag_label = "small"                # ±1 step (300 or 500)
+            elif numeric_mag <= 200:
+                mag_label = "medium"               # ±2 steps (200 or 600)
+            elif numeric_mag <= 300:
+                mag_label = "large"                # ±3 steps (100 or 700)
+            elif numeric_mag <= 400:
+                mag_label = "xlarge"               # ±4 steps (800)
+            else:
+                mag_label = "xxlarge"              # ±5 steps (900)
+
+        elif dimension == "jpeg_compression":
+            # Raw label = "light" / "medium" / "heavy" (quality level, not severity).
+            # numeric_mag = 100 − quality (higher = more compressed = more degraded).
+            if numeric_mag <= 0:
+                mag_label = raw_magnitude
+            elif numeric_mag <= 35:
+                mag_label = "small"                # light compression (high quality)
+            elif numeric_mag <= 65:
+                mag_label = "medium"
+            else:
+                mag_label = "large"                # heavy compression (low quality)
+
+        elif dimension == "opacity":
+            # Raw label = "p95" / "p70" / "p30" (opacity percentile codes).
+            # numeric_mag = 1 − opacity (higher = more transparent = more degraded).
+            if numeric_mag <= 0:
+                mag_label = raw_magnitude
+            elif numeric_mag <= 0.15:
+                mag_label = "small"                # nearly opaque (p95)
+            elif numeric_mag <= 0.45:
+                mag_label = "medium"               # partially transparent (p70)
+            else:
+                mag_label = "large"                # strongly transparent (p30)
+
+        else:
+            mag_label = raw_magnitude
 
         row = {
             "stimulus_id": sid,
-            "model": r.get("model", "unknown"),
+            "model": model_name,
             "experiment": r.get("experiment", ""),
             "parse_success": r.get("parse_success", True),
             "edit_type": m.get("edit_type", "unknown"),
@@ -219,10 +396,10 @@ def _load_raw_results(
             "template_id": tmpl.get("template_id", "unknown"),
             "difficulty_tier": tmpl.get("difficulty_tier", "unknown"),
             "degradation_dimension": dimension,
-            "degradation_magnitude": deg.get("magnitude", "unknown"),
+            "degradation_magnitude": mag_label,
             "degradation_layer": deg.get("layer", "unknown"),
             "degradation_params": params,
-            "numeric_magnitude": _params_to_numeric_magnitude(dimension, params),
+            "numeric_magnitude": numeric_mag,
             "detected_difference": r.get("detected_difference"),
             "similarity_score": r.get("similarity_score"),
             "exp1_description": r.get("description"),
@@ -244,20 +421,22 @@ def load_results(
 ) -> pd.DataFrame:
     """Load results.jsonl and join with per-stimulus metadata.
 
-    Noop records (``degradation_dimension == "noop"``) are excluded — use
-    :func:`load_noop_results` to load those separately.
+    Noop records (``degradation_dimension == "noop"``) and perfect-edit records
+    (``numeric_magnitude == 0``) are excluded — use :func:`load_noop_results`
+    and :func:`load_perfect_results` to load those separately.
 
     Returns
     -------
     pd.DataFrame
-        One row per result record, enriched with metadata columns:
-        edit_type, edit_id, template_id, difficulty_tier,
+        One row per degraded result record (mag > 0), enriched with metadata
+        columns: edit_type, edit_id, template_id, difficulty_tier,
         degradation_dimension, degradation_magnitude, degradation_layer,
         degradation_params, numeric_magnitude, model, experiment,
         parse_success, plus all score columns.
     """
     df = _load_raw_results(results_jsonl, manifest_dir)
-    return df[df["degradation_dimension"] != "noop"].reset_index(drop=True)
+    mask = (df["degradation_dimension"] != "noop") & (df["numeric_magnitude"] > 0)
+    return df[mask].reset_index(drop=True)
 
 
 def load_noop_results(
@@ -272,6 +451,22 @@ def load_noop_results(
     """
     df = _load_raw_results(results_jsonl, manifest_dir)
     return df[df["degradation_dimension"] == "noop"].reset_index(drop=True)
+
+
+def load_perfect_results(
+    results_jsonl: str | Path,
+    manifest_dir: str | Path,
+) -> pd.DataFrame:
+    """Load only perfect-edit records from results.jsonl.
+
+    Perfect-edit stimuli have ``numeric_magnitude == 0``: the edit was applied
+    correctly with no degradation.  The model should score these at 5/5 (Exp2)
+    and report no perceptual difference (Exp1).  This data is kept separate
+    for miscalibration and false-positive analysis.
+    """
+    df = _load_raw_results(results_jsonl, manifest_dir)
+    mask = (df["degradation_dimension"] != "noop") & (df["numeric_magnitude"] == 0)
+    return df[mask].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -318,21 +513,23 @@ def plot_sensitivity_curve(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Aggregate all edit types together
-    grouped = (
-        sub.groupby("numeric_magnitude")[exp2_score]
-        .agg(["mean", "sem"])
-        .reset_index()
-        .sort_values("numeric_magnitude")
-    )
-    x = grouped["numeric_magnitude"].values.astype(float)
-    y = grouped["mean"].values.astype(float)
-    yerr = np.nan_to_num(grouped["sem"].values.astype(float))
+    # Aggregate all edit types together — bootstrap 95% CI
+    grouped_keys = sorted(sub["numeric_magnitude"].unique())
+    x    = np.array(grouped_keys, dtype=float)
+    y    = np.zeros(len(x))
+    y_lo = np.zeros(len(x))
+    y_hi = np.zeros(len(x))
+    for j, mag in enumerate(grouped_keys):
+        vals = sub[sub["numeric_magnitude"] == mag][exp2_score].dropna().values
+        y[j] = float(np.mean(vals)) if len(vals) else float("nan")
+        lo, hi = _bootstrap_ci(vals)
+        y_lo[j] = lo
+        y_hi[j] = hi
 
     color = "steelblue"
 
-    # Shaded confidence band
-    ax.fill_between(x, y - yerr, y + yerr, alpha=0.2, color=color)
+    # Shaded bootstrap 95% CI band
+    ax.fill_between(x, y_lo, y_hi, alpha=0.2, color=color)
 
     # Dots at actual data points
     ax.scatter(x, y, s=50, zorder=5, color=color)
@@ -387,18 +584,21 @@ def plot_sensitivity_curve_exp1(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    grouped = (
-        sub.groupby("numeric_magnitude")["similarity_score"]
-        .agg(["mean", "sem"])
-        .reset_index()
-        .sort_values("numeric_magnitude")
-    )
-    x = grouped["numeric_magnitude"].values.astype(float)
-    y = grouped["mean"].values.astype(float)
-    yerr = np.nan_to_num(grouped["sem"].values.astype(float))
+    # Bootstrap 95% CI
+    grouped_keys = sorted(sub["numeric_magnitude"].unique())
+    x    = np.array(grouped_keys, dtype=float)
+    y    = np.zeros(len(x))
+    y_lo = np.zeros(len(x))
+    y_hi = np.zeros(len(x))
+    for j, mag in enumerate(grouped_keys):
+        vals = sub[sub["numeric_magnitude"] == mag]["similarity_score"].dropna().values
+        y[j] = float(np.mean(vals)) if len(vals) else float("nan")
+        lo, hi = _bootstrap_ci(vals)
+        y_lo[j] = lo
+        y_hi[j] = hi
 
     color = "steelblue"
-    ax.fill_between(x, y - yerr, y + yerr, alpha=0.2, color=color)
+    ax.fill_between(x, y_lo, y_hi, alpha=0.2, color=color)
     ax.scatter(x, y, s=50, zorder=5, color=color)
 
     if len(x) >= 2:
@@ -436,6 +636,8 @@ _DIM_TO_EDIT_TYPE: dict[str, str] = {
     "rotation":          "rotation",
     "scale_error":       "scale",
     "font_weight":       "font_weight",
+    "font_weight_light": "font_weight",
+    "font_weight_heavy": "font_weight",
     "font_style":        "italic",
     "letter_spacing":    "letter_spacing",
     "font_family":       "font_family",
@@ -751,17 +953,28 @@ def _draw_gap_curve(
     def _plot_series(data: pd.DataFrame, score_col: str, label: str, color: str, marker: str):
         if data.empty:
             return
-        grouped = (
-            data.groupby("numeric_magnitude")[score_col]
-            .agg(["mean", "sem"])
-            .reset_index()
-            .sort_values("numeric_magnitude")
-        )
-        x = grouped["numeric_magnitude"].values.astype(float)
-        y = grouped["mean"].values.astype(float)
-        yerr = np.nan_to_num(grouped["sem"].values.astype(float))
-        ax.plot(x, y, color=color, marker=marker, label=label, linewidth=2)
-        ax.fill_between(x, y - yerr, y + yerr, alpha=0.15, color=color)
+        # Bootstrap 95% CI
+        grouped_keys = sorted(data["numeric_magnitude"].unique())
+        x    = np.array(grouped_keys, dtype=float)
+        y    = np.zeros(len(x))
+        y_lo = np.zeros(len(x))
+        y_hi = np.zeros(len(x))
+        for j, mag in enumerate(grouped_keys):
+            vals = data[data["numeric_magnitude"] == mag][score_col].dropna().values
+            y[j] = float(np.mean(vals)) if len(vals) else float("nan")
+            lo, hi = _bootstrap_ci(vals)
+            y_lo[j] = lo
+            y_hi[j] = hi
+
+        ax.scatter(x, y, color=color, marker=marker, s=30, zorder=3, alpha=0.5)
+        ax.fill_between(x, y_lo, y_hi, alpha=0.15, color=color)
+        # Regression line instead of noisy point-to-point line
+        valid = ~np.isnan(y)
+        if valid.sum() >= 2:
+            coeffs = np.polyfit(x[valid], y[valid], 1)
+            x_line = np.linspace(x[valid].min(), x[valid].max(), 200)
+            ax.plot(x_line, np.polyval(coeffs, x_line),
+                    color=color, linewidth=2, label=label)
 
     _plot_series(exp1, "similarity_score", "Exp1: similarity score", "#2196F3", "o")
     _plot_series(exp2, exp2_score, f"Exp2: {exp2_score.replace('_', ' ')}", "#FF5722", "s")
@@ -971,4 +1184,164 @@ def plot_exp_gap(
 
     _add_example_panels(fig, gs, examples, manifest_dir, start_row=1)
 
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Plot: multi-model psychometric curves
+# ---------------------------------------------------------------------------
+
+# Colour cycle for multiple models
+_MODEL_COLORS = [
+    "#2196F3",   # blue
+    "#FF5722",   # deep orange
+    "#4CAF50",   # green
+    "#9C27B0",   # purple
+    "#FF9800",   # amber
+    "#00BCD4",   # cyan
+]
+
+
+def plot_psychometric_curve(
+    df: pd.DataFrame,
+    dimension: str,
+    models: list[str] | None = None,
+    *,
+    exclude_perfect: bool = True,
+    figsize: tuple[float, float] = (10, 5),
+) -> plt.Figure:
+    """Psychometric curves: detection rate (Exp1) and overall_quality (Exp2)
+    plotted against magnitude tier label, with one line per model on shared axes.
+
+    Parameters
+    ----------
+    df:
+        Combined DataFrame from load_results() containing both experiments.
+    dimension:
+        Degradation dimension to plot.
+    models:
+        List of model names to include.  When None, all models in df are used.
+    exclude_perfect:
+        When True (default), magnitude-0 stimuli are excluded.
+
+    Returns
+    -------
+    matplotlib Figure with two vertically stacked axes:
+        top    — Exp1 detection rate vs magnitude tier (proportion 0–1)
+        bottom — Exp2 mean overall_quality vs magnitude tier (score 1–5)
+
+    X-axis labels are the tier labels (e.g. "micro", "tiny", "small", …)
+    sorted by ascending mean numeric magnitude, as required by the chapter.
+    Bootstrap 95% CI shaded bands are drawn for each model line.
+    """
+    if models is None:
+        models = sorted(df["model"].unique().tolist())
+
+    sub_all = df[
+        (df["degradation_dimension"] == dimension)
+        & df["parse_success"]
+    ].copy()
+    if exclude_perfect:
+        sub_all = sub_all[sub_all["numeric_magnitude"] > 0]
+
+    if sub_all.empty:
+        fig, axes = plt.subplots(2, 1, figsize=figsize)
+        for ax in axes:
+            ax.text(0.5, 0.5, f"No data for {dimension!r}",
+                    ha="center", va="center", transform=ax.transAxes)
+        axes[0].set_title(f"Psychometric curves — {dimension}")
+        fig.tight_layout()
+        return fig
+
+    # Determine tier order: sort tier labels by their mean numeric magnitude
+    # across all models so that the x-axis is monotone.
+    tier_num = (
+        sub_all.groupby("degradation_magnitude")["numeric_magnitude"]
+        .mean()
+        .sort_values()
+    )
+    tier_order = list(tier_num.index)
+
+    fig, (ax_det, ax_oq) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+    x_pos = np.arange(len(tier_order))
+
+    for m_idx, model in enumerate(models):
+        color = _MODEL_COLORS[m_idx % len(_MODEL_COLORS)]
+
+        # --- Exp1: detection rate per tier ---
+        sub_e1 = sub_all[
+            (sub_all["model"] == model)
+            & (sub_all["experiment"] == "experiment_1")
+            & sub_all["detected_difference"].notna()
+        ].copy()
+        sub_e1["detected"] = sub_e1["detected_difference"].astype(bool).astype(float)
+
+        det_y    = np.full(len(tier_order), float("nan"))
+        det_y_lo = np.full(len(tier_order), float("nan"))
+        det_y_hi = np.full(len(tier_order), float("nan"))
+        for j, tier in enumerate(tier_order):
+            vals = sub_e1[sub_e1["degradation_magnitude"] == tier]["detected"].values
+            if len(vals) > 0:
+                det_y[j] = float(np.mean(vals))
+                lo, hi = _bootstrap_ci(vals)
+                det_y_lo[j] = lo
+                det_y_hi[j] = hi
+
+        valid = ~np.isnan(det_y)
+        if valid.any():
+            ax_det.plot(x_pos[valid], det_y[valid], "o-", color=color, label=model, linewidth=2)
+            ax_det.fill_between(
+                x_pos[valid], det_y_lo[valid], det_y_hi[valid],
+                alpha=0.15, color=color,
+            )
+
+        # --- Exp2: overall_quality per tier ---
+        sub_e2 = sub_all[
+            (sub_all["model"] == model)
+            & (sub_all["experiment"] == "experiment_2")
+            & sub_all["overall_quality"].notna()
+        ]
+
+        oq_y    = np.full(len(tier_order), float("nan"))
+        oq_y_lo = np.full(len(tier_order), float("nan"))
+        oq_y_hi = np.full(len(tier_order), float("nan"))
+        for j, tier in enumerate(tier_order):
+            vals = sub_e2[sub_e2["degradation_magnitude"] == tier]["overall_quality"].values
+            if len(vals) > 0:
+                oq_y[j] = float(np.mean(vals))
+                lo, hi = _bootstrap_ci(vals)
+                oq_y_lo[j] = lo
+                oq_y_hi[j] = hi
+
+        valid = ~np.isnan(oq_y)
+        if valid.any():
+            ax_oq.plot(x_pos[valid], oq_y[valid], "s-", color=color, label=model, linewidth=2)
+            ax_oq.fill_between(
+                x_pos[valid], oq_y_lo[valid], oq_y_hi[valid],
+                alpha=0.15, color=color,
+            )
+
+    # Axes cosmetics
+    ax_det.set_ylabel("Detection rate (Exp1)", fontsize=9)
+    ax_det.set_ylim(-0.05, 1.05)
+    ax_det.axhline(0.5,  color="gray",  linestyle="--", linewidth=1, alpha=0.6, label="50 %")
+    ax_det.axhline(0.75, color="gray",  linestyle=":",  linewidth=1, alpha=0.6, label="75 %")
+    ax_det.legend(loc="lower right", fontsize=8)
+    ax_det.grid(True, alpha=0.3)
+    ax_det.set_title(f"Psychometric curves — {dimension}", fontsize=11)
+
+    ax_oq.set_ylabel("Overall quality (Exp2, 1–5)", fontsize=9)
+    ax_oq.set_ylim(0.5, 5.5)
+    ax_oq.axhline(4.0, color="red", linestyle=":", linewidth=1, alpha=0.6, label="threshold (4)")
+    ax_oq.legend(loc="upper right", fontsize=8)
+    ax_oq.grid(True, alpha=0.3)
+
+    # Tier labels on x-axis (shared)
+    ax_oq.set_xticks(x_pos)
+    ax_oq.set_xticklabels(
+        [t.replace("_", "\n") for t in tier_order], fontsize=8
+    )
+    ax_oq.set_xlabel("Magnitude tier (sorted by ascending numeric magnitude)", fontsize=9)
+
+    fig.tight_layout()
     return fig

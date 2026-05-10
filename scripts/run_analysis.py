@@ -32,13 +32,25 @@ import matplotlib.pyplot as plt
 _repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_repo_root / "src"))
 
-from analysis.curves import load_results, load_noop_results, plot_sensitivity_curve, plot_sensitivity_curve_exp1, plot_exp_gap
+from analysis.curves import (
+    load_results,
+    load_noop_results,
+    load_perfect_results,
+    plot_sensitivity_curve,
+    plot_sensitivity_curve_exp1,
+    plot_exp_gap,
+    plot_psychometric_curve,
+)
 from analysis.heatmap import (
     plot_detection_heatmap_by_dim,
+    plot_detection_rate_heatmap_dim_by_model,
     plot_score_heatmap,
     plot_perfect_score_heatmap,
     plot_noop_score_heatmap,
+    plot_score_distributions,
+    plot_blind_sensitive_heatmap,
 )
+from analysis.stats import compute_all_stats
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +60,7 @@ from analysis.heatmap import (
 _CONTINUOUS_DIMENSIONS = [
     "color_offset",
     "position_offset",
+    "alignment_error",
     "scale_error",
     "rotation",
     "letter_spacing",
@@ -59,7 +72,8 @@ _CONTINUOUS_DIMENSIONS = [
 ]
 
 _DISCRETE_DIMENSIONS = [
-    "font_weight",
+    "font_weight_light",
+    "font_weight_heavy",
     "font_style",
     "font_family",
     "word_error",
@@ -69,8 +83,6 @@ _DISCRETE_DIMENSIONS = [
 
 _ALL_DIMENSIONS = _CONTINUOUS_DIMENSIONS + _DISCRETE_DIMENSIONS
 
-# Every dimension gets its own exp-gap plot.  Each plot shows only stimuli
-# belonging to that specific degradation dimension.
 _EXP_GAP_DIMENSIONS = list(_ALL_DIMENSIONS)
 
 _EXP2_SCORE_COLS = [
@@ -119,12 +131,29 @@ def _load_noop_combined(
     return pd.concat(frames, ignore_index=True)
 
 
+def _load_perfect_combined(
+    results_exp1: Path | None,
+    results_exp2: Path | None,
+    manifest_dir: Path,
+):
+    import pandas as pd
+    frames = []
+    if results_exp1 is not None:
+        frames.append(load_perfect_results(results_exp1, manifest_dir))
+    if results_exp2 is not None:
+        frames.append(load_perfect_results(results_exp2, manifest_dir))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def run_analysis(
     results_exp1: Path | None,
     results_exp2: Path | None,
     manifest_dir: Path,
     output_dir: Path,
     model_name: str | None,
+    gap_examples: bool = False,
 ) -> None:
     output_dir = output_dir.resolve()
 
@@ -134,12 +163,15 @@ def run_analysis(
 
     sources = [p for p in (results_exp1, results_exp2) if p is not None]
     print(f"Loading results from: {', '.join(str(p) for p in sources)} ...")
-    df = _load_combined(results_exp1, results_exp2, manifest_dir)
-    noop_df = _load_noop_combined(results_exp1, results_exp2, manifest_dir)
+    df         = _load_combined(results_exp1, results_exp2, manifest_dir)
+    noop_df    = _load_noop_combined(results_exp1, results_exp2, manifest_dir)
+    perfect_df = _load_perfect_combined(results_exp1, results_exp2, manifest_dir)
     print(f"  {len(df)} records loaded ({df['stimulus_id'].nunique()} stimuli, "
           f"{df['model'].nunique()} model(s))")
     if not noop_df.empty:
         print(f"  {len(noop_df)} noop records loaded")
+    if not perfect_df.empty:
+        print(f"  {len(perfect_df)} perfect-edit records loaded")
 
     if df.empty:
         print("ERROR: no data — nothing to plot.")
@@ -150,12 +182,12 @@ def run_analysis(
 
     available_dims = set(df["degradation_dimension"].unique())
 
-    # If a display name is given, relabel the model column so all plot
-    # functions see the name the user provided — no path inference.
     if model_name:
         df["model"] = model_name
         if not noop_df.empty:
             noop_df["model"] = model_name
+        if not perfect_df.empty:
+            perfect_df["model"] = model_name
         vlms = [model_name]
     else:
         vlms = sorted(df["model"].unique())
@@ -164,21 +196,36 @@ def run_analysis(
     print(f"Experiments present: {'exp1 ' if has_exp1 else ''}{'exp2' if has_exp2 else ''}")
     print(f"Output directory: {output_dir}\n")
 
-    # One model → figures go directly into output_dir.
-    # Multiple models → one subdir per model name inside output_dir.
     def vlm_dir(name: str) -> Path:
         if len(vlms) == 1:
             return output_dir
-        return output_dir / name.replace("-", "_").replace(".", "_")
+        safe = name.replace("/", "_").replace("\\", "_").replace("-", "_").replace(".", "_")
+        return output_dir / safe
+
+    # ------------------------------------------------------------------
+    # Compute full stats bundle (needed for blind/sensitive heatmap)
+    # ------------------------------------------------------------------
+    stats = None
+    if has_exp1 or has_exp2:
+        print("Computing statistics bundle ...")
+        try:
+            stats = compute_all_stats(
+                df,
+                noop_df=noop_df if not noop_df.empty else None,
+                perfect_df=perfect_df if not perfect_df.empty else None,
+            )
+            print("  done.\n")
+        except Exception as exc:
+            print(f"  WARNING: stats computation failed: {exc}\n")
 
     for vlm in vlms:
         vdir = vlm_dir(vlm)
 
         # ------------------------------------------------------------------
-        # 1. Sensitivity curves
+        # 1. Sensitivity curves — per VLM
         # ------------------------------------------------------------------
         if has_exp1:
-            print(f"[{vlm}] Sensitivity curves (Exp1 — detection rate) ...")
+            print(f"[{vlm}] Sensitivity curves (Exp1 — similarity score) ...")
             for dim in _ALL_DIMENSIONS:
                 if dim not in available_dims:
                     continue
@@ -193,10 +240,8 @@ def run_analysis(
                 fig = plot_sensitivity_curve(df, dim, vlm)
                 save_fig(fig, vdir / "sensitivity" / f"{dim}.png")
 
-            # ----------------------------------------------------------------
-            # 2. Sensitivity curves for additional Exp2 score columns
-            # ----------------------------------------------------------------
-            for score_col in _EXP2_SCORE_COLS[1:]:  # skip overall_quality (done above)
+            # Additional Exp2 score columns
+            for score_col in _EXP2_SCORE_COLS[1:]:
                 for dim in _ALL_DIMENSIONS:
                     if dim not in available_dims:
                         continue
@@ -204,24 +249,30 @@ def run_analysis(
                     save_fig(fig, vdir / "sensitivity" / score_col / f"{dim}.png")
 
         # ------------------------------------------------------------------
-        # 3. Exp1 vs Exp2 gap curves — only when both experiments are present
+        # 2. Exp1 vs Exp2 gap curves
         # ------------------------------------------------------------------
         if has_exp1 and has_exp2:
             print(f"[{vlm}] Exp1 vs Exp2 gap curves ...")
             for dim in _EXP_GAP_DIMENSIONS:
                 if dim not in available_dims:
                     continue
-                fig = plot_exp_gap(df, dim, vlm=vlm, manifest_dir=manifest_dir)
+                fig = plot_exp_gap(
+                    df, dim, vlm=vlm,
+                    manifest_dir=manifest_dir if gap_examples else None,
+                )
                 save_fig(fig, vdir / "exp_gap" / f"{dim}.png")
 
         # ------------------------------------------------------------------
-        # 4. Heatmaps
+        # 3. Per-VLM detection heatmap (single model, edit_type × dimension)
         # ------------------------------------------------------------------
         if has_exp1:
             print(f"[{vlm}] Detection heatmap by dimension (Exp1) ...")
             fig = plot_detection_heatmap_by_dim(df, vlm)
-            save_fig(fig, vdir / "heatmaps" / "detection_rate.png")
+            save_fig(fig, vdir / "heatmaps" / "detection_rate_by_dim.png")
 
+        # ------------------------------------------------------------------
+        # 4. Score heatmaps (Exp2)
+        # ------------------------------------------------------------------
         if has_exp2:
             print(f"[{vlm}] Score heatmaps (Exp2) ...")
             for score_col in _EXP2_SCORE_COLS:
@@ -229,28 +280,63 @@ def run_analysis(
                 save_fig(fig, vdir / "heatmaps" / f"score_{score_col}.png")
 
         # ------------------------------------------------------------------
-        # 5. Perfect-edit heatmaps (magnitude = 0) — Exp2 only
+        # 5. Perfect-edit score heatmap (Exp2)
         # ------------------------------------------------------------------
-        if has_exp2:
+        if has_exp2 and not perfect_df.empty:
             print(f"[{vlm}] Perfect-edit score heatmap (Exp2) ...")
-            fig = plot_perfect_score_heatmap(df, vlm)
+            fig = plot_perfect_score_heatmap(perfect_df, vlm)
             save_fig(fig, vdir / "heatmaps" / "perfect_scores.png")
 
         # ------------------------------------------------------------------
-        # 6. Noop heatmaps (image unchanged) — Exp2 only
+        # 6. Noop score heatmap (Exp2)
         # ------------------------------------------------------------------
         if not noop_df.empty:
             noop_has_exp2 = "experiment_2" in noop_df["experiment"].values
-            noop_vlm = noop_df[noop_df["model"] == vlm]
-
+            noop_vlm      = noop_df[noop_df["model"] == vlm]
             if noop_has_exp2 and not noop_vlm[noop_vlm["experiment"] == "experiment_2"].empty:
                 print(f"[{vlm}] Noop score heatmap (Exp2) ...")
                 fig = plot_noop_score_heatmap(noop_vlm, vlm)
                 save_fig(fig, vdir / "heatmaps" / "noop_scores.png")
 
+        # ------------------------------------------------------------------
+        # 7. Score distribution histograms — per dimension
+        # ------------------------------------------------------------------
+        if has_exp1 or has_exp2:
+            print(f"[{vlm}] Score distribution histograms ...")
+            for dim in _ALL_DIMENSIONS:
+                if dim not in available_dims:
+                    continue
+                fig = plot_score_distributions(df, dim, models=[vlm])
+                save_fig(fig, vdir / "distributions" / f"{dim}.png")
+
     # ------------------------------------------------------------------
-    # 6. Cross-model comparison heatmaps (if multiple models, Exp2 needed)
+    # 8. Multi-model figures — only produced when multiple models present
     # ------------------------------------------------------------------
+
+    # Detection rate heatmap: dimension × model
+    if has_exp1:
+        print("\nDetection rate heatmap (dimension × model) ...")
+        fig = plot_detection_rate_heatmap_dim_by_model(df, models=vlms)
+        save_fig(fig, output_dir / "heatmaps" / "detection_rate_dim_by_model.png")
+
+    # Psychometric curves: detection rate + OQ, all models on one axes
+    if has_exp1 or has_exp2:
+        print("Psychometric curves (multi-model) ...")
+        for dim in _ALL_DIMENSIONS:
+            if dim not in available_dims:
+                continue
+            fig = plot_psychometric_curve(df, dim, models=vlms)
+            save_fig(fig, output_dir / "psychometric" / f"{dim}.png")
+
+    # Blind/sensitive binary heatmap
+    if stats is not None:
+        bst = stats.get("sensitivity_rank", {}).get("blind_sensitive_table")
+        if bst:
+            print("Blind/sensitive heatmap ...")
+            fig = plot_blind_sensitive_heatmap(bst)
+            save_fig(fig, output_dir / "heatmaps" / "blind_sensitive.png")
+
+    # Cross-model overall_quality comparison
     if len(vlms) > 1 and has_exp2:
         print("\nCross-model comparison ...")
         _plot_cross_model_comparison(df, vlms, output_dir)
@@ -268,7 +354,7 @@ def _plot_cross_model_comparison(
     import numpy as np
     from analysis.heatmap import _present_dims, _present_edit_types, _DIMENSION_ORDER, _EDIT_TYPE_ORDER
 
-    dims = _present_dims(df, _DIMENSION_ORDER)
+    dims       = _present_dims(df, _DIMENSION_ORDER)
     edit_types = _present_edit_types(df, _EDIT_TYPE_ORDER)
 
     n_models = len(vlms)
@@ -279,7 +365,7 @@ def _plot_cross_model_comparison(
     )
 
     for col, vlm in enumerate(vlms):
-        ax = axes[0][col]
+        ax  = axes[0][col]
         sub = df[
             (df["model"] == vlm)
             & (df["experiment"] == "experiment_2")
@@ -317,39 +403,29 @@ def main() -> None:
         epilog="Supply at least one of --results-exp1 / --results-exp2.",
     )
     parser.add_argument(
-        "--results-exp1",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="Exp1 (perceptual sensitivity) results JSONL. "
-             "Enables: detection heatmaps, Exp1-vs-Exp2 gap curves (if exp2 also given).",
+        "--results-exp1", type=Path, default=None, metavar="PATH",
+        help="Exp1 (perceptual sensitivity) results JSONL.",
     )
     parser.add_argument(
-        "--results-exp2",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="Exp2 (instruction-following) results JSONL. "
-             "Enables: sensitivity curves, score heatmaps, cross-model comparison.",
+        "--results-exp2", type=Path, default=None, metavar="PATH",
+        help="Exp2 (instruction-following) results JSONL.",
     )
     parser.add_argument(
-        "--manifest",
-        type=Path,
-        default=Path("data/full/"),
+        "--manifest", type=Path, default=Path("data/full/"),
         help="Stimulus manifest directory (default: data/full/)",
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("outputs/figures/"),
+        "--output", type=Path, default=Path("outputs/figures/"),
         help="Output directory for figures (default: outputs/figures/)",
     )
     parser.add_argument(
-        "--model-name",
-        default=None,
-        metavar="NAME",
-        help="Display name for the model (used in graph titles and output dirs). "
-             "If omitted, the raw value from the results 'model' column is used.",
+        "--model-name", default=None, metavar="NAME",
+        help="Display name for the model (used in graph titles and output dirs).",
+    )
+    parser.add_argument(
+        "--gap-examples", action="store_true", default=False,
+        help="Append example stimulus panels (images + scores) below each exp-gap curve. "
+             "Slow to generate; off by default.",
     )
     args = parser.parse_args()
 
@@ -362,6 +438,7 @@ def main() -> None:
         manifest_dir=args.manifest.resolve(),
         output_dir=args.output.resolve(),
         model_name=args.model_name,
+        gap_examples=args.gap_examples,
     )
 
 
