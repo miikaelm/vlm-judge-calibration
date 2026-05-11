@@ -48,6 +48,19 @@ EXP2_SCORE_COLS = [
     "overall_quality",
 ]
 
+# The four narrowly-scoped dimensions whose rubric scope is well-defined and
+# cross-model comparable.  Their mean (narrow_mean) is the primary
+# cross-model quality aggregate used for level-based comparisons and rankings.
+# overall_quality is excluded because its holistic prompt scope is resolved
+# differently by each model — see the noop control analysis (Section 4.2.3),
+# which shows a >2.5-point spread on a 5-point scale when no edit is applied.
+NARROW_DIMS = [
+    "instruction_following",
+    "text_accuracy",
+    "visual_consistency",
+    "layout_preservation",
+]
+
 _BLIND_SPOT_ALPHA = 0.05   # FDR level for blind-spot binomial tests
 _PRIMARY_ALPHA   = 0.05    # FDR level for primary Spearman tests
 
@@ -489,11 +502,17 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
     if e2.empty:
         return {"error": "no exp2 data"}
 
+    # Compute narrow_mean: cross-model comparable aggregate of the four
+    # narrowly-scoped dimensions.  Rows where any narrow dim is NaN are
+    # allowed — pandas mean(axis=1) skips NaN by default.
+    e2["narrow_mean"] = e2[NARROW_DIMS].mean(axis=1)
+
     out: dict[str, Any] = {}
 
     # --- global descriptives per score column (degraded stimuli only) ---
+    # narrow_mean is appended after the raw score columns.
     global_scores: dict[str, Any] = {}
-    for col in EXP2_SCORE_COLS:
+    for col in EXP2_SCORE_COLS + ["narrow_mean"]:
         vals = e2[col].dropna()
         global_scores[col] = {
             "mean":         round(float(vals.mean()),   4),
@@ -508,6 +527,8 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
     out["score_descriptives"] = global_scores
 
     # --- score intercorrelation matrix (per model) ---
+    # narrow_mean is intentionally excluded: it is derived from the four
+    # narrow dims, so including it would trivially inflate correlations.
     score_cols_avail = [c for c in EXP2_SCORE_COLS if c in e2.columns]
     corr_data = e2[score_cols_avail].dropna()
     corr_rho  = corr_data.corr(method="spearman").round(4)
@@ -527,7 +548,8 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
         mags = sub["numeric_magnitude"].values
         dim_entry: dict[str, Any] = {"n": int(len(sub))}
 
-        for col in EXP2_SCORE_COLS:
+        # narrow_mean is appended so it gets the same per-dim stats as the raw cols.
+        for col in EXP2_SCORE_COLS + ["narrow_mean"]:
             vals = sub[col].dropna().values
             if len(vals) == 0:
                 continue
@@ -541,28 +563,29 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
                 "magnitude_p":   round(p,   4) if not np.isnan(p)   else None,
             }
 
-        # Per-magnitude mean overall_quality table
-        oq_sub    = sub[sub["overall_quality"].notna()]
-        mag_table = (
-            oq_sub.groupby("degradation_magnitude")
-            .agg(
-                mean=("overall_quality", "mean"),
-                std=("overall_quality", "std"),
-                count=("overall_quality", "count"),
-                numeric_magnitude_mean=("numeric_magnitude", "mean"),
+        # Per-magnitude mean tables — overall_quality (raw) and narrow_mean (aggregate)
+        for score_col in ("overall_quality", "narrow_mean"):
+            col_sub   = sub[sub[score_col].notna()]
+            mag_table = (
+                col_sub.groupby("degradation_magnitude")
+                .agg(
+                    mean=(score_col, "mean"),
+                    std=(score_col, "std"),
+                    count=(score_col, "count"),
+                    numeric_magnitude_mean=("numeric_magnitude", "mean"),
+                )
+                .reset_index()
+                .sort_values("numeric_magnitude_mean")
             )
-            .reset_index()
-            .sort_values("numeric_magnitude_mean")
-        )
-        dim_entry["overall_quality_by_magnitude"] = {
-            str(row["degradation_magnitude"]): {
-                "mean": round(float(row["mean"]), 4),
-                "std":  round(float(row["std"]) if not np.isnan(row["std"]) else 0.0, 4),
-                "n":    int(row["count"]),
-                "numeric_magnitude_mean": round(float(row["numeric_magnitude_mean"]), 4),
+            dim_entry[f"{score_col}_by_magnitude"] = {
+                str(row["degradation_magnitude"]): {
+                    "mean": round(float(row["mean"]), 4),
+                    "std":  round(float(row["std"]) if not np.isnan(row["std"]) else 0.0, 4),
+                    "n":    int(row["count"]),
+                    "numeric_magnitude_mean": round(float(row["numeric_magnitude_mean"]), 4),
+                }
+                for _, row in mag_table.iterrows()
             }
-            for _, row in mag_table.iterrows()
-        }
 
         per_dim[dim] = dim_entry
 
@@ -576,6 +599,8 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
             "n": int(len(sub)),
             "overall_quality_mean": round(float(sub["overall_quality"].mean()), 4),
             "overall_quality_std":  round(float(sub["overall_quality"].std()),  4),
+            "narrow_mean_mean":     round(float(sub["narrow_mean"].mean()), 4),
+            "narrow_mean_std":      round(float(sub["narrow_mean"].std()),  4),
         }
     out["by_edit_type"] = per_et
 
@@ -587,8 +612,10 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
             & perfect_df["overall_quality"].notna()
         ].copy()
         if not e2_perf.empty:
+            e2_perf = e2_perf.copy()
+            e2_perf["narrow_mean"] = e2_perf[NARROW_DIMS].mean(axis=1)
             perf_scores: dict[str, Any] = {}
-            for col in EXP2_SCORE_COLS:
+            for col in EXP2_SCORE_COLS + ["narrow_mean"]:
                 vals = e2_perf[col].dropna()
                 if len(vals) == 0:
                     continue
@@ -603,7 +630,7 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
             for dim in sorted(e2_perf["degradation_dimension"].unique()):
                 sub = e2_perf[e2_perf["degradation_dimension"] == dim]
                 dim_entry = {"n": int(len(sub))}
-                for col in EXP2_SCORE_COLS:
+                for col in EXP2_SCORE_COLS + ["narrow_mean"]:
                     vals = sub[col].dropna().values
                     if len(vals) == 0:
                         continue
@@ -702,8 +729,11 @@ def _noop_stats(noop_df: pd.DataFrame) -> dict:
     ].copy()
 
     if not e2.empty:
+        # narrow_mean on noop stimuli is the key cross-model comparator:
+        # models should score 1 on all dims → narrow_mean should be 1.
+        e2["narrow_mean"] = e2[NARROW_DIMS].mean(axis=1)
         global_scores: dict[str, Any] = {}
-        for col in EXP2_SCORE_COLS:
+        for col in EXP2_SCORE_COLS + ["narrow_mean"]:
             vals = e2[col].dropna()
             if len(vals) == 0:
                 continue
@@ -723,7 +753,7 @@ def _noop_stats(noop_df: pd.DataFrame) -> dict:
         for et in sorted(e2["edit_type"].unique()):
             sub = e2[e2["edit_type"] == et]
             et_entry: dict[str, Any] = {"n": int(len(sub))}
-            for col in EXP2_SCORE_COLS:
+            for col in EXP2_SCORE_COLS + ["narrow_mean"]:
                 vals = sub[col].dropna().values
                 if len(vals) == 0:
                     continue
@@ -762,6 +792,9 @@ def _cross_exp_stats(df: pd.DataFrame) -> dict:
     if e1.empty or e2.empty:
         return {"error": "need both experiments"}
 
+    # Compute narrow_mean on e2 before merging.
+    e2["narrow_mean"] = e2[NARROW_DIMS].mean(axis=1)
+
     out: dict[str, Any] = {}
 
     shared_sids = set(e1["stimulus_id"]) & set(e2["stimulus_id"])
@@ -770,7 +803,7 @@ def _cross_exp_stats(df: pd.DataFrame) -> dict:
     merged = pd.merge(
         e1[["stimulus_id", "numeric_magnitude", "similarity_score", "detected_difference",
             "degradation_dimension", "edit_type"]],
-        e2[["stimulus_id", "overall_quality", "instruction_following",
+        e2[["stimulus_id", "overall_quality", "narrow_mean", "instruction_following",
             "text_accuracy", "visual_consistency", "layout_preservation"]],
         on="stimulus_id",
     )
@@ -780,10 +813,19 @@ def _cross_exp_stats(df: pd.DataFrame) -> dict:
         out["error"] = "insufficient overlap for correlation"
         return out
 
+    # Global Spearman sim vs OQ — within-model rank analysis, kept with raw OQ.
     rho, p = _safe_spearman(
         merged["similarity_score"].values, merged["overall_quality"].values
     )
     out["global_spearman_sim_vs_oq"] = {"rho": round(rho, 4), "p": round(p, 6)}
+
+    # Global Spearman sim vs narrow_mean — cross-model comparable aggregate.
+    rho_nm, p_nm = _safe_spearman(
+        merged["similarity_score"].values, merged["narrow_mean"].values
+    )
+    out["global_spearman_sim_vs_narrow_mean"] = {
+        "rho": round(rho_nm, 4), "p": round(p_nm, 6)
+    }
 
     rho_d, p_d = _safe_pointbiserial(
         merged["overall_quality"].values.astype(float),
@@ -797,10 +839,15 @@ def _cross_exp_stats(df: pd.DataFrame) -> dict:
         if len(sub) < 3:
             continue
 
+        # Within-model rank correlation: kept with raw OQ (rank-invariant to scale offset).
         rho, p = _safe_spearman(
             sub["similarity_score"].values, sub["overall_quality"].values
         )
-        gap = float(sub["overall_quality"].mean() - sub["similarity_score"].mean())
+
+        # Level-based gap uses narrow_mean (cross-model comparable).
+        gap_nm = float(sub["narrow_mean"].mean() - sub["similarity_score"].mean())
+        # Also retain OQ gap for the dedicated OQ subsection.
+        gap_oq = float(sub["overall_quality"].mean() - sub["similarity_score"].mean())
 
         detected_mask = pd.to_numeric(
             sub["detected_difference"], errors="coerce"
@@ -813,11 +860,16 @@ def _cross_exp_stats(df: pd.DataFrame) -> dict:
 
         per_dim[dim] = {
             "n": int(len(sub)),
+            # Within-model rank analysis — raw OQ is appropriate here.
             "spearman_sim_vs_oq_rho": round(rho, 4) if not np.isnan(rho) else None,
             "spearman_sim_vs_oq_p":   round(p,   4) if not np.isnan(p)   else None,
-            "mean_exp1_similarity": round(float(sub["similarity_score"].mean()), 4),
-            "mean_exp2_oq":         round(float(sub["overall_quality"].mean()),  4),
-            "score_gap_exp2_minus_exp1": round(gap, 4),
+            "mean_exp1_similarity":   round(float(sub["similarity_score"].mean()), 4),
+            # Cross-model level comparison — use narrow_mean.
+            "mean_exp2_narrow_mean":  round(float(sub["narrow_mean"].mean()), 4),
+            "score_gap_narrow_mean_minus_exp1": round(gap_nm, 4),
+            # Raw OQ kept for the dedicated OQ subsection (not cross-model levels).
+            "mean_exp2_oq":             round(float(sub["overall_quality"].mean()), 4),
+            "score_gap_oq_minus_exp1":  round(gap_oq, 4),
             "exp2_high_score_rate_when_exp1_detected": (
                 round(exp2_high_given_detected, 4)
                 if not np.isnan(exp2_high_given_detected) else None
@@ -826,10 +878,12 @@ def _cross_exp_stats(df: pd.DataFrame) -> dict:
 
     out["by_dimension"] = per_dim
 
+    # Blind-spot: detected in Exp1 but rated high in Exp2.
+    # Uses narrow_mean >= 4 (cross-model comparable aggregate).
     det_bool  = pd.to_numeric(
         merged["detected_difference"], errors="coerce"
     ).fillna(0).astype(bool)
-    blind_spot = merged[det_bool & (merged["overall_quality"] >= 4)]
+    blind_spot = merged[det_bool & (merged["narrow_mean"] >= 4)]
     out["blind_spot_count"] = len(blind_spot)
     out["blind_spot_rate"]  = round(
         float(len(blind_spot) / max(1, det_bool.sum())), 4
@@ -861,10 +915,10 @@ def _apply_fdr_correction(out: dict, alpha: float = _PRIMARY_ALPHA) -> None:
                 if p is not None and not np.isnan(float(p)):
                     entries.append((d, key, float(p)))
 
-    # Collect exp2 p-values
+    # Collect exp2 p-values — includes narrow_mean alongside the raw score cols
     for _model, e2 in out.get("exp2", {}).get("by_model", {}).items():
         for _dim, d in e2.get("by_dimension", {}).items():
-            for col in EXP2_SCORE_COLS:
+            for col in EXP2_SCORE_COLS + ["narrow_mean"]:
                 col_dict = d.get(col, {})
                 if not isinstance(col_dict, dict):
                     continue
@@ -1019,7 +1073,7 @@ def _sensitivity_rank(out: dict, exp1_by_model: dict, exp2_by_model: dict) -> di
             and d not in universally_blind
         ]
 
-    # Detail table (also includes Exp2 OQ info for comprehensive ranking)
+    # Detail table — includes both narrow_mean (primary aggregate) and OQ (reference)
     detail: dict[str, Any] = {}
     for dim in dims:
         e2_samples: list[dict] = [
@@ -1031,9 +1085,20 @@ def _sensitivity_rank(out: dict, exp1_by_model: dict, exp2_by_model: dict) -> di
             for d in e2_samples
             if isinstance(d.get("overall_quality"), dict)
         ]
+        nm_means = [
+            d.get("narrow_mean", {}).get("mean")
+            for d in e2_samples
+            if isinstance(d.get("narrow_mean"), dict)
+        ]
         detail[dim] = {
             "mean_detection_rate":      _mean_det(dim),
             "detection_rate_by_model":  detection_rates[dim],
+            # Primary cross-model quality aggregate
+            "mean_exp2_narrow_mean": (
+                round(float(np.mean([v for v in nm_means if v is not None])), 4)
+                if nm_means else None
+            ),
+            # Raw OQ — for within-model reference only, not cross-model levels
             "mean_exp2_oq": (
                 round(float(np.mean([v for v in oq_means if v is not None])), 4)
                 if oq_means else None
@@ -1093,10 +1158,19 @@ def _failure_mode_table(out: dict, models: list[str]) -> list[dict]:
         row["noop_above_1_rate"]    = oq_desc.get("above_1_rate")
         row["noop_high_rating_rate"] = oq_desc.get("high_rating_rate")
 
-        # Score gap (global)
-        e2m        = out.get("exp2", {}).get("by_model", {}).get(model, {})
-        oq_mean_e2 = e2m.get("score_descriptives", {}).get("overall_quality", {}).get("mean")
+        # Score gaps (global)
+        e2m         = out.get("exp2", {}).get("by_model", {}).get(model, {})
+        oq_mean_e2  = e2m.get("score_descriptives", {}).get("overall_quality", {}).get("mean")
+        nm_mean_e2  = e2m.get("score_descriptives", {}).get("narrow_mean", {}).get("mean")
         sim_mean_e1 = e1m.get("similarity_score_mean")
+        # narrow_mean gap — primary cross-model comparable metric
+        if nm_mean_e2 is not None and sim_mean_e1 is not None:
+            row["score_gap_narrow_mean_minus_exp1"] = round(
+                float(nm_mean_e2) - float(sim_mean_e1), 4
+            )
+        else:
+            row["score_gap_narrow_mean_minus_exp1"] = None
+        # OQ gap — kept for the dedicated OQ subsection (within-model reference)
         if oq_mean_e2 is not None and sim_mean_e1 is not None:
             row["score_gap_exp2_minus_exp1"] = round(
                 float(oq_mean_e2) - float(sim_mean_e1), 4
@@ -1382,10 +1456,13 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
     _sub("Table 4.5: Instruction-not-followed control — Exp2 noop scores")
     lines.append("  Source: noop.by_model.<model>.exp2.score_descriptives")
     lines.append("  (Expected score = 1 everywhere; edit was never applied.)")
+    lines.append("  narrow_mean = mean(IF, text_acc, visual_cons, layout_pres) — cross-model comparable aggregate.")
+    lines.append("  NOTE: narrow_mean noop divergence is the key cross-model comparator.")
     w5 = [24] + [14] * len(models)
     _row("Score dimension", *[f"{m[:12]} mean" for m in models], widths=w5)
     _row("-"*24, *["-"*14]*len(models), widths=w5)
-    for col in EXP2_SCORE_COLS:
+    for col in EXP2_SCORE_COLS + ["narrow_mean"]:
+        label = col if col != "narrow_mean" else "narrow_mean [PRIMARY]"
         vals = [
             _f(
                 noop_bm.get(m, {})
@@ -1396,7 +1473,7 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
             )
             for m in models
         ]
-        _row(col, *vals, widths=w5)
+        _row(label, *vals, widths=w5)
 
     # ------------------------------------------------------------------ #
     # 4.3 Exp1 Perceptual Sensitivity                                     #
@@ -1503,13 +1580,16 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
 
     _sub("Table 4.9: Exp2 score descriptives per model (all degraded stimuli)")
     lines.append("  Source: exp2.by_model.<model>.score_descriptives")
-    w9 = [24, 8] + [8, 10, 8] * len(models)
+    lines.append("  narrow_mean = mean(IF, text_acc, visual_cons, layout_pres).")
+    lines.append("  PRIMARY cross-model aggregate: use narrow_mean for level comparisons.")
+    lines.append("  overall_quality: within-model use only (noop divergence >2.5 pts across models).")
+    w9 = [30, 8] + [8, 10, 8] * len(models)
     header9 = ["Score dimension", "Stat"]
     for m in models:
         short = m[:6]
         header9 += [f"{short} mean", f"{short} ceil%", f"{short} flr%"]
     _row(*header9, widths=w9)
-    _row(*(["-"*24, "-"*8] + ["-"*8, "-"*10, "-"*8] * len(models)), widths=w9)
+    _row(*(["-"*30, "-"*8] + ["-"*8, "-"*10, "-"*8] * len(models)), widths=w9)
     for col in EXP2_SCORE_COLS:
         cells9 = [col, ""]
         for m in models:
@@ -1520,6 +1600,16 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
                 _pct(s.get("floor_rate")),
             ]
         _row(*cells9, widths=w9)
+    # narrow_mean row — primary cross-model aggregate
+    nm_cells = ["narrow_mean [PRIMARY AGGREGATE]", ""]
+    for m in models:
+        s = exp2_bm.get(m, {}).get("score_descriptives", {}).get("narrow_mean", {})
+        nm_cells += [
+            _f(s.get("mean"), 2),
+            "—",  # ceiling/floor not meaningful for continuous mean
+            "—",
+        ]
+    _row(*nm_cells, widths=w9)
 
     _sub("Table 4.10: Spearman intercorrelations and Cronbach's alpha per model (Exp2)")
     lines.append("  Source: exp2.by_model.<model>.score_intercorrelation_spearman + cronbach_alpha")
@@ -1540,36 +1630,41 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
                 lines.append(f"    {row_col:<24}{vals_str}")
         lines.append("")
 
-    _sub("Table 4.11: Exp2 overall_quality means and Spearman ρ per dimension")
-    lines.append("  Source: exp2.by_model.<model>.by_dimension.overall_quality")
-    w11 = [24] + [10, 8] * len(models)
+    _sub("Table 4.11: Exp2 narrow_mean (primary) and overall_quality (reference) per dimension")
+    lines.append("  Source: exp2.by_model.<model>.by_dimension.{narrow_mean,overall_quality}")
+    lines.append("  NM μ = narrow_mean mean (cross-model comparable PRIMARY aggregate).")
+    lines.append("  OQ μ = overall_quality mean (within-model reference; NOT cross-model comparable).")
+    lines.append("  ρ = Spearman(numeric_magnitude, score), BH-corrected p.")
+    w11 = [24] + [8, 8, 8, 8] * len(models)
     header11 = ["Dimension"]
     for m in models:
-        short = m[:8]
-        header11 += [f"{short} OQ μ", "ρ"]
+        short = m[:7]
+        header11 += [f"{short} NM μ", "ρ_NM", f"{short} OQ μ", "ρ_OQ"]
     _row(*header11, widths=w11)
-    _row(*(["-"*24] + ["-"*10, "-"*8] * len(models)), widths=w11)
+    _row(*(["-"*24] + ["-"*8, "-"*8, "-"*8, "-"*8] * len(models)), widths=w11)
+
+    def _sig_rho(d_col: dict | None) -> tuple[str, str]:
+        """Return (mean_str, rho_with_sig_str) for a score col dict."""
+        if not isinstance(d_col, dict):
+            return "—", "n/s"
+        mn  = _f(d_col.get("mean"), 2)
+        rho = d_col.get("magnitude_rho")
+        rho_corr = d_col.get("magnitude_p_corrected") or d_col.get("magnitude_p")
+        sig = ""
+        if rho_corr is not None and not np.isnan(float(rho_corr)):
+            if float(rho_corr) < 0.001:   sig = "***"
+            elif float(rho_corr) < 0.01:  sig = "**"
+            elif float(rho_corr) < 0.05:  sig = "*"
+        rho_s = (f"{rho:+.3f}{sig}" if rho is not None and not np.isnan(float(rho)) else "n/s")
+        return mn, rho_s
+
     for dim in all_dims2:
         row_cells = [dim]
         for m in models:
             d  = exp2_bm.get(m, {}).get("by_dimension", {}).get(dim, {})
-            oq = d.get("overall_quality", {})
-            mn  = _f(oq.get("mean"), 2) if isinstance(oq, dict) else "—"
-            rho = oq.get("magnitude_rho") if isinstance(oq, dict) else None
-            rho_corr = (
-                oq.get("magnitude_p_corrected") or oq.get("magnitude_p")
-                if isinstance(oq, dict) else None
-            )
-            sig = ""
-            if rho_corr is not None and not np.isnan(float(rho_corr)):
-                if float(rho_corr) < 0.001:
-                    sig = "***"
-                elif float(rho_corr) < 0.01:
-                    sig = "**"
-                elif float(rho_corr) < 0.05:
-                    sig = "*"
-            rho_s = (f"{rho:+.3f}{sig}" if rho is not None and not np.isnan(float(rho)) else "n/s")
-            row_cells += [mn, rho_s]
+            nm_mn, nm_rho = _sig_rho(d.get("narrow_mean"))
+            oq_mn, oq_rho = _sig_rho(d.get("overall_quality"))
+            row_cells += [nm_mn, nm_rho, oq_mn, oq_rho]
         _row(*row_cells, widths=w11)
 
     # ------------------------------------------------------------------ #
@@ -1577,55 +1672,62 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
     # ------------------------------------------------------------------ #
     _h("SECTION 4.6 — PERCEPTION-TO-JUDGMENT GAP (EXP1 vs EXP2)")
 
-    _sub("Table 4.12: Global Spearman sim↔OQ and point-biserial detected↔OQ")
+    _sub("Table 4.12: Global cross-experiment correlations")
     lines.append("  Source: cross_exp.by_model.<model>")
-    w12 = [28, 18, 18, 18]
-    _row("Model", "Matched stimuli", "ρ (sim↔OQ)", "r_pb (det↔OQ)", widths=w12)
-    _row("-"*28, "-"*18, "-"*18, "-"*18, widths=w12)
+    lines.append("  ρ(sim↔OQ): Spearman between Exp1 similarity and Exp2 overall_quality.")
+    lines.append("    Within-model rank analysis — OQ is appropriate (rank-invariant to scale offset).")
+    lines.append("  ρ(sim↔NM): Spearman between Exp1 similarity and Exp2 narrow_mean.")
+    lines.append("    Cross-model comparable aggregate.")
+    w12 = [28, 16, 14, 14, 16]
+    _row("Model", "Matched stimuli", "ρ (sim↔OQ)", "ρ (sim↔NM)", "r_pb (det↔OQ)", widths=w12)
+    _row("-"*28, "-"*16, "-"*14, "-"*14, "-"*16, widths=w12)
     for model in models:
         cx = cross_bm.get(model, {})
         rho_sim_oq = cx.get("global_spearman_sim_vs_oq", {}).get("rho")
+        rho_sim_nm = cx.get("global_spearman_sim_vs_narrow_mean", {}).get("rho")
         r_pb       = cx.get("global_pointbiserial_detected_vs_oq", {}).get("r")
         _row(
             model,
             _i(cx.get("stimuli_in_both_experiments")),
             _f(rho_sim_oq, 3),
+            _f(rho_sim_nm, 3),
             _f(r_pb, 3),
             widths=w12,
         )
 
-    _sub("Table 4.13: Per-dimension score gap (Exp2 OQ − Exp1 sim) and cross-exp ρ")
+    _sub("Table 4.13: Per-dimension score gaps and cross-exp ρ")
     lines.append("  Source: cross_exp.by_model.<model>.by_dimension")
-    w13 = [24] + [10, 8] * len(models)
+    lines.append("  NM gap = narrow_mean − Exp1 sim (PRIMARY cross-model level comparison).")
+    lines.append("  OQ gap = overall_quality − Exp1 sim (within-model reference; shown for 4.5.5).")
+    lines.append("  ρ = Spearman(Exp1 sim, Exp2 OQ) — within-model rank analysis, raw OQ used.")
+    w13 = [24] + [8, 8, 8, 8] * len(models)
     header13 = ["Dimension"]
     for m in models:
-        short = m[:8]
-        header13 += [f"{short} gap", "ρ"]
+        short = m[:7]
+        header13 += [f"{short} NM gap", "OQ gap", "ρ(OQ)", ""]
     _row(*header13, widths=w13)
-    _row(*(["-"*24] + ["-"*10, "-"*8] * len(models)), widths=w13)
+    _row(*(["-"*24] + ["-"*8, "-"*8, "-"*8, "-"*8] * len(models)), widths=w13)
     for dim in all_dims2:
         row_cells = [dim]
         for m in models:
-            d   = cross_bm.get(m, {}).get("by_dimension", {}).get(dim, {})
-            gap = d.get("score_gap_exp2_minus_exp1")
-            rho = d.get("spearman_sim_vs_oq_rho")
-            gap_s = f"{gap:+.2f}" if gap is not None and not np.isnan(float(gap)) else "—"
-            rho_p = d.get("spearman_sim_vs_oq_p")
+            d      = cross_bm.get(m, {}).get("by_dimension", {}).get(dim, {})
+            gap_nm = d.get("score_gap_narrow_mean_minus_exp1")
+            gap_oq = d.get("score_gap_oq_minus_exp1")
+            rho    = d.get("spearman_sim_vs_oq_rho")
+            rho_p  = d.get("spearman_sim_vs_oq_p")
+            gap_nm_s = f"{gap_nm:+.2f}" if gap_nm is not None and not np.isnan(float(gap_nm)) else "—"
+            gap_oq_s = f"{gap_oq:+.2f}" if gap_oq is not None and not np.isnan(float(gap_oq)) else "—"
             sig = ""
             if rho_p is not None and not np.isnan(float(rho_p)):
-                if float(rho_p) < 0.001:
-                    sig = "***"
-                elif float(rho_p) < 0.01:
-                    sig = "**"
-                elif float(rho_p) < 0.05:
-                    sig = "*"
-                else:
-                    sig = "n/s"
+                if float(rho_p) < 0.001:   sig = "***"
+                elif float(rho_p) < 0.01:  sig = "**"
+                elif float(rho_p) < 0.05:  sig = "*"
+                else:                       sig = "n/s"
             rho_s = (
                 f"{rho:+.3f}{sig}"
                 if rho is not None and not np.isnan(float(rho)) else "n/s"
             )
-            row_cells += [gap_s, rho_s]
+            row_cells += [gap_nm_s, gap_oq_s, rho_s, ""]
         _row(*row_cells, widths=w13)
 
     # ------------------------------------------------------------------ #
@@ -1680,8 +1782,9 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
     lines.append(f"  exp1_FPR = adjusted FPR from perfect_edits (excl. {sorted(_FPR_EXCLUDED_DIMS)}).")
     lines.append("  Noop detection rates (Exp1 noop pairs) are a DIFFERENT measurement.")
     if fmt:
-        w_fm = [28, 8, 8, 8, 10, 10, 8]
-        _row("Model", "PSR-E1", "PSR-E2", "FPR", "Noop>1%", "Noop>=3%", "Gap", widths=w_fm)
+        w_fm = [28, 8, 8, 8, 10, 10, 10, 10]
+        _row("Model", "PSR-E1", "PSR-E2", "FPR", "Noop>1%", "Noop>=3%",
+             "NM gap [PRI]", "OQ gap", widths=w_fm)
         _row(*(["-"*w for w in w_fm]), widths=w_fm)
         for row in fmt:
             def _fmtp(v, pct: bool = True) -> str:
@@ -1695,6 +1798,7 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
                 _fmtp(row.get("exp1_false_positive_rate")),
                 _fmtp(row.get("noop_above_1_rate")),
                 _fmtp(row.get("noop_high_rating_rate")),
+                _fmtp(row.get("score_gap_narrow_mean_minus_exp1"), pct=False),
                 _fmtp(row.get("score_gap_exp2_minus_exp1"), pct=False),
                 widths=w_fm,
             )

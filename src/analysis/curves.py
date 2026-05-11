@@ -412,7 +412,14 @@ def _load_raw_results(
         }
         rows.append(row)
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # narrow_mean: cross-model comparable aggregate of the four narrowly-scoped
+    # dimensions.  Computed here so every downstream function has it available.
+    _narrow_dims = ["instruction_following", "text_accuracy",
+                    "visual_consistency", "layout_preservation"]
+    if all(c in df.columns for c in _narrow_dims):
+        df["narrow_mean"] = df[_narrow_dims].mean(axis=1)
+    return df
 
 
 def load_results(
@@ -1210,8 +1217,14 @@ def plot_psychometric_curve(
     exclude_perfect: bool = True,
     figsize: tuple[float, float] = (10, 5),
 ) -> plt.Figure:
-    """Psychometric curves: detection rate (Exp1) and overall_quality (Exp2)
+    """Psychometric curves: detection rate (Exp1) and narrow_mean (Exp2)
     plotted against magnitude tier label, with one line per model on shared axes.
+
+    The bottom panel uses narrow_mean (mean of the four narrowly-scoped rubric
+    dimensions: instruction_following, text_accuracy, visual_consistency,
+    layout_preservation) rather than raw overall_quality, because narrow_mean
+    is cross-model comparable — the noop control shows overall_quality diverges
+    by >2.5 pts across models even when no edit is applied.
 
     Parameters
     ----------
@@ -1228,7 +1241,7 @@ def plot_psychometric_curve(
     -------
     matplotlib Figure with two vertically stacked axes:
         top    — Exp1 detection rate vs magnitude tier (proportion 0–1)
-        bottom — Exp2 mean overall_quality vs magnitude tier (score 1–5)
+        bottom — Exp2 mean narrow_mean vs magnitude tier (score 1–5)
 
     X-axis labels are the tier labels (e.g. "micro", "tiny", "small", …)
     sorted by ascending mean numeric magnitude, as required by the chapter.
@@ -1295,18 +1308,18 @@ def plot_psychometric_curve(
                 alpha=0.15, color=color,
             )
 
-        # --- Exp2: overall_quality per tier ---
+        # --- Exp2: narrow_mean per tier (cross-model comparable aggregate) ---
         sub_e2 = sub_all[
             (sub_all["model"] == model)
             & (sub_all["experiment"] == "experiment_2")
-            & sub_all["overall_quality"].notna()
+            & sub_all["narrow_mean"].notna()
         ]
 
         oq_y    = np.full(len(tier_order), float("nan"))
         oq_y_lo = np.full(len(tier_order), float("nan"))
         oq_y_hi = np.full(len(tier_order), float("nan"))
         for j, tier in enumerate(tier_order):
-            vals = sub_e2[sub_e2["degradation_magnitude"] == tier]["overall_quality"].values
+            vals = sub_e2[sub_e2["degradation_magnitude"] == tier]["narrow_mean"].values
             if len(vals) > 0:
                 oq_y[j] = float(np.mean(vals))
                 lo, hi = _bootstrap_ci(vals)
@@ -1330,7 +1343,7 @@ def plot_psychometric_curve(
     ax_det.grid(True, alpha=0.3)
     ax_det.set_title(f"Psychometric curves — {dimension}", fontsize=11)
 
-    ax_oq.set_ylabel("Overall quality (Exp2, 1–5)", fontsize=9)
+    ax_oq.set_ylabel("Narrow mean (Exp2, 1–5)", fontsize=9)
     ax_oq.set_ylim(0.5, 5.5)
     ax_oq.axhline(4.0, color="red", linestyle=":", linewidth=1, alpha=0.6, label="threshold (4)")
     ax_oq.legend(loc="upper right", fontsize=8)

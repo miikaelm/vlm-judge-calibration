@@ -86,7 +86,8 @@ _ALL_DIMENSIONS = _CONTINUOUS_DIMENSIONS + _DISCRETE_DIMENSIONS
 _EXP_GAP_DIMENSIONS = list(_ALL_DIMENSIONS)
 
 _EXP2_SCORE_COLS = [
-    "overall_quality",
+    "narrow_mean",          # primary cross-model aggregate (computed column)
+    "overall_quality",      # raw holistic score — within-model use only
     "instruction_following",
     "text_accuracy",
     "visual_consistency",
@@ -233,15 +234,18 @@ def run_analysis(
                 save_fig(fig, vdir / "sensitivity" / "exp1" / f"{dim}.png")
 
         if has_exp2:
-            print(f"[{vlm}] Sensitivity curves (Exp2 — overall_quality) ...")
+            # Primary sensitivity curves use overall_quality (within-model rank analysis).
+            print(f"[{vlm}] Sensitivity curves (Exp2 — overall_quality, within-model) ...")
             for dim in _ALL_DIMENSIONS:
                 if dim not in available_dims:
                     continue
                 fig = plot_sensitivity_curve(df, dim, vlm)
                 save_fig(fig, vdir / "sensitivity" / f"{dim}.png")
 
-            # Additional Exp2 score columns
-            for score_col in _EXP2_SCORE_COLS[1:]:
+            # Per-score-col sensitivity curves (includes narrow_mean)
+            for score_col in _EXP2_SCORE_COLS:
+                if score_col == "overall_quality":
+                    continue  # already generated above as the default
                 for dim in _ALL_DIMENSIONS:
                     if dim not in available_dims:
                         continue
@@ -336,9 +340,9 @@ def run_analysis(
             fig = plot_blind_sensitive_heatmap(bst)
             save_fig(fig, output_dir / "heatmaps" / "blind_sensitive.png")
 
-    # Cross-model overall_quality comparison
+    # Cross-model narrow_mean comparison (primary aggregate — cross-model comparable)
     if len(vlms) > 1 and has_exp2:
-        print("\nCross-model comparison ...")
+        print("\nCross-model comparison (narrow_mean) ...")
         _plot_cross_model_comparison(df, vlms, output_dir)
 
     print("\nDone.")
@@ -349,7 +353,13 @@ def _plot_cross_model_comparison(
     vlms: list[str],
     output_dir: Path,
 ) -> None:
-    """Plot side-by-side overall_quality heatmaps for each model."""
+    """Plot side-by-side narrow_mean heatmaps for each model.
+
+    Uses narrow_mean (mean of instruction_following, text_accuracy,
+    visual_consistency, layout_preservation) as the cross-model comparable
+    quality aggregate.  overall_quality is NOT used here because its holistic
+    prompt scope is resolved differently by each model (noop divergence >2.5 pts).
+    """
     import matplotlib.pyplot as plt
     import numpy as np
     from analysis.heatmap import _present_dims, _present_edit_types, _DIMENSION_ORDER, _EDIT_TYPE_ORDER
@@ -370,14 +380,14 @@ def _plot_cross_model_comparison(
             (df["model"] == vlm)
             & (df["experiment"] == "experiment_2")
             & df["parse_success"]
-            & df["overall_quality"].notna()
+            & df["narrow_mean"].notna()
         ]
         matrix = np.full((len(edit_types), len(dims)), np.nan)
         for i, et in enumerate(edit_types):
             for j, dim in enumerate(dims):
                 cell = sub[(sub["edit_type"] == et) & (sub["degradation_dimension"] == dim)]
                 if not cell.empty:
-                    matrix[i, j] = cell["overall_quality"].mean()
+                    matrix[i, j] = cell["narrow_mean"].mean()
 
         im = ax.imshow(matrix, cmap="RdYlGn", vmin=1, vmax=5, aspect="auto")
         ax.set_xticks(range(len(dims)))
@@ -392,7 +402,7 @@ def _plot_cross_model_comparison(
                 if not np.isnan(val):
                     ax.text(j, i, f"{val:.1f}", ha="center", va="center", fontsize=6)
 
-    fig.suptitle("Cross-model: Exp2 overall_quality (mean)", fontsize=12)
+    fig.suptitle("Cross-model: Exp2 narrow_mean (mean of 4 narrow dims)", fontsize=12)
     fig.tight_layout()
     save_fig(fig, output_dir / "cross_model_comparison.png")
 
