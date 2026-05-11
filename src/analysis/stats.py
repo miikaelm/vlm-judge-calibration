@@ -1668,6 +1668,74 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
         _row(*row_cells, widths=w11)
 
     # ------------------------------------------------------------------ #
+    # 4.5 SUPPLEMENT — Layout-affecting degradations (side analysis)      #
+    # ------------------------------------------------------------------ #
+    # Degradations that directly alter text element position, orientation,
+    # or size — so layout_preservation is NOT trivially at ceiling for them.
+    _LAYOUT_DIMS: list[str] = [
+        "position_offset",
+        "rotation",
+        "scale_error",
+        "letter_spacing",
+    ]
+    _h("SECTION 4.5 SUPPLEMENT — LAYOUT-AFFECTING DEGRADATIONS (Exp2)")
+    lines.append("  Dimensions where the degradation directly modifies position,")
+    lines.append("  orientation, or size of text elements (layout_preservation may vary).")
+    lines.append("  layout_pres μ  = mean layout_preservation score for that dimension.")
+    lines.append("  ceil%          = ceiling rate (score==5) for layout_preservation.")
+    lines.append("  ρ_lp           = Spearman(numeric_magnitude, layout_preservation), BH-corrected.")
+    lines.append("")
+
+    # Overall layout_preservation baseline (all degraded stimuli)
+    lines.append("  Overall layout_preservation (all degraded stimuli):")
+    w_lp0 = [28, 10, 10]
+    _row("Model", "LP mean", "LP ceil%", widths=w_lp0)
+    _row("-"*28, "-"*10, "-"*10, widths=w_lp0)
+    for m in models:
+        gsd = exp2_bm.get(m, {}).get("score_descriptives", {}).get("layout_preservation", {})
+        _row(m, _f(gsd.get("mean"), 3), _pct(gsd.get("ceiling_rate")), widths=w_lp0)
+
+    lines.append("")
+    lines.append("  Per layout-affecting dimension:")
+    w_lp = [24] + [10, 8, 10] * len(models)
+    header_lp = ["Dimension"]
+    for m in models:
+        short = m[:8]
+        header_lp += [f"{short} LP μ", "ceil%", "ρ_lp"]
+    _row(*header_lp, widths=w_lp)
+    _row(*(["-"*24] + ["-"*10, "-"*8, "-"*10] * len(models)), widths=w_lp)
+    for dim in _LAYOUT_DIMS:
+        row_cells = [dim]
+        for m in models:
+            d = exp2_bm.get(m, {}).get("by_dimension", {}).get(dim, {})
+            lp = d.get("layout_preservation", {})
+            if not lp:
+                row_cells += ["—", "—", "n/s"]
+                continue
+            lp_mn = _f(lp.get("mean"), 3)
+            lp_ceil = _pct(lp.get("ceiling_rate"))
+            _, rho_s = _sig_rho(lp)
+            row_cells += [lp_mn, lp_ceil, rho_s]
+        _row(*row_cells, widths=w_lp)
+
+    lines.append("")
+    lines.append("  narrow_mean for layout-affecting dimensions (for comparison with Table 4.11):")
+    w_lp2 = [24] + [10, 10] * len(models)
+    header_lp2 = ["Dimension"]
+    for m in models:
+        short = m[:8]
+        header_lp2 += [f"{short} NM μ", "ρ_NM"]
+    _row(*header_lp2, widths=w_lp2)
+    _row(*(["-"*24] + ["-"*10, "-"*10] * len(models)), widths=w_lp2)
+    for dim in _LAYOUT_DIMS:
+        row_cells = [dim]
+        for m in models:
+            d = exp2_bm.get(m, {}).get("by_dimension", {}).get(dim, {})
+            nm_mn, nm_rho = _sig_rho(d.get("narrow_mean"))
+            row_cells += [nm_mn, nm_rho]
+        _row(*row_cells, widths=w_lp2)
+
+    # ------------------------------------------------------------------ #
     # 4.6 Cross-Experiment Gap                                            #
     # ------------------------------------------------------------------ #
     _h("SECTION 4.6 — PERCEPTION-TO-JUDGMENT GAP (EXP1 vs EXP2)")
