@@ -74,6 +74,27 @@ _PRIMARY_ALPHA   = 0.05    # FDR level for primary Spearman tests
 # unaffected and still includes alignment_error for full transparency.
 _FPR_EXCLUDED_DIMS: frozenset[str] = frozenset({"alignment_error"})
 
+# Maps degradation_dimension → the edit_type for which that degradation is
+# "primary" (i.e. the degradation directly fails the thing the instruction
+# asked to change).  A stimulus is classified primary when its edit_type
+# matches this value; all other stimuli for that dimension are secondary
+# (the instruction target was met, but something unrelated degraded).
+# Dimensions absent from this map (blur, gaussian_noise, jpeg_compression,
+# opacity) have no matching edit_type and are always secondary.
+_DIM_TO_EDIT_TYPE: dict[str, str] = {
+    "color_offset":      "color",
+    "alignment_error":   "relocation",
+    "position_offset":   "relocation",
+    "rotation":          "rotation",
+    "scale_error":       "scale",
+    "font_weight":       "font_weight",
+    "font_weight_light": "font_weight",
+    "font_weight_heavy": "font_weight",
+    "font_style":        "italic",
+    "letter_spacing":    "letter_spacing",
+    "font_family":       "font_family",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helper: Benjamini-Hochberg FDR correction
@@ -646,6 +667,60 @@ def _exp2_stats(df: pd.DataFrame, perfect_df: pd.DataFrame | None = None) -> dic
                 "score_descriptives": perf_scores,
                 "by_dimension": perf_by_dim,
             }
+
+    # --- primary vs secondary instruction_following analysis ---
+    # A stimulus is "primary" when its degradation_dimension maps to the
+    # same edit_type as the instruction (the exact property asked to change
+    # was degraded).  "Secondary" stimuli have a correct primary edit but
+    # a collateral degradation on an unrelated property.
+    # A calibrated model should score IF low on primary and high on secondary.
+    if "edit_type" in e2.columns:
+        def _ps_label(row: Any) -> str:
+            primary_et = _DIM_TO_EDIT_TYPE.get(row["degradation_dimension"])
+            if primary_et is None:
+                return "secondary"
+            return "primary" if row["edit_type"] == primary_et else "secondary"
+
+        e2 = e2.copy()
+        e2["_ps"] = e2.apply(_ps_label, axis=1)
+
+        ps_global: dict[str, Any] = {}
+        for ps in ("primary", "secondary"):
+            sub_if = e2[e2["_ps"] == ps]["instruction_following"].dropna()
+            ps_global[ps] = {
+                "n":            int(len(sub_if)),
+                "mean":         round(float(sub_if.mean()),          4) if len(sub_if) else None,
+                "ceiling_rate": round(float((sub_if == 5).mean()),   4) if len(sub_if) else None,
+                "floor_rate":   round(float((sub_if == 1).mean()),   4) if len(sub_if) else None,
+            }
+        pri_m = ps_global["primary"]["mean"]
+        sec_m = ps_global["secondary"]["mean"]
+        ps_global["gap_secondary_minus_primary"] = (
+            round(sec_m - pri_m, 4) if pri_m is not None and sec_m is not None else None
+        )
+
+        # Per degradation dimension — show IF mean for each ps group
+        ps_by_dim: dict[str, Any] = {}
+        for dim in sorted(e2["degradation_dimension"].unique()):
+            dim_sub = e2[e2["degradation_dimension"] == dim]
+            dim_entry: dict[str, Any] = {}
+            for ps in ("primary", "secondary"):
+                sub_if = dim_sub[dim_sub["_ps"] == ps]["instruction_following"].dropna()
+                if len(sub_if) == 0:
+                    continue
+                dim_entry[ps] = {
+                    "n":            int(len(sub_if)),
+                    "mean":         round(float(sub_if.mean()),        4),
+                    "ceiling_rate": round(float((sub_if == 5).mean()), 4),
+                    "floor_rate":   round(float((sub_if == 1).mean()), 4),
+                }
+            if dim_entry:
+                ps_by_dim[dim] = dim_entry
+
+        out["if_primary_secondary"] = {
+            "global":     ps_global,
+            "by_dimension": ps_by_dim,
+        }
 
     return out
 
@@ -1666,6 +1741,67 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
             oq_mn, oq_rho = _sig_rho(d.get("overall_quality"))
             row_cells += [nm_mn, nm_rho, oq_mn, oq_rho]
         _row(*row_cells, widths=w11)
+
+    # ------------------------------------------------------------------ #
+    # 4.5 SUPPLEMENT — IF primary vs secondary (instruction alignment)    #
+    # ------------------------------------------------------------------ #
+    _h("SECTION 4.5 SUPPLEMENT — IF: PRIMARY VS SECONDARY DEGRADATIONS (Exp2)")
+    lines.append("  Primary  : degradation targets the exact property the instruction asked to change.")
+    lines.append("  Secondary: degradation hits an unrelated property; instruction target was met.")
+    lines.append("  A calibrated model should score IF LOW on primary and HIGH on secondary.")
+    lines.append("  Gap = secondary_mean − primary_mean (positive = correct direction).")
+    lines.append("")
+
+    # Global summary
+    w_ps0 = [28, 8, 8, 8, 8, 8, 8, 10]
+    _row("Model",
+         "Pri n", "Pri IF μ", "Pri ceil%", "Pri flr%",
+         "Sec IF μ", "Sec ceil%", "Gap",
+         widths=w_ps0)
+    _row("-"*28, *["-"*8]*6, "-"*10, widths=w_ps0)
+    for m in models:
+        ps = exp2_bm.get(m, {}).get("if_primary_secondary", {})
+        pri = ps.get("global", {}).get("primary", {})
+        sec = ps.get("global", {}).get("secondary", {})
+        gap = ps.get("global", {}).get("gap_secondary_minus_primary")
+        gap_s = f"{gap:+.3f}" if gap is not None and not np.isnan(float(gap)) else "—"
+        _row(
+            m,
+            _i(pri.get("n")),
+            _f(pri.get("mean"), 2),
+            _pct(pri.get("ceiling_rate")),
+            _pct(pri.get("floor_rate")),
+            _f(sec.get("mean"), 2),
+            _pct(sec.get("ceiling_rate")),
+            gap_s,
+            widths=w_ps0,
+        )
+
+    lines.append("")
+    lines.append("  Per degradation dimension — IF mean (primary | secondary):")
+    lines.append("  'primary' column is only populated when the dimension has a matching edit_type.")
+    lines.append("  Dims without a primary edit_type (blur, noise, jpeg, opacity) are secondary-only.")
+    all_ps_dims: set[str] = set()
+    for m in models:
+        all_ps_dims.update(
+            exp2_bm.get(m, {}).get("if_primary_secondary", {}).get("by_dimension", {}).keys()
+        )
+    w_ps1 = [24] + [10, 10] * len(models)
+    header_ps = ["Dimension"]
+    for m in models:
+        short = m[:8]
+        header_ps += [f"{short} Pri", "Sec"]
+    _row(*header_ps, widths=w_ps1)
+    _row(*(["-"*24] + ["-"*10, "-"*10] * len(models)), widths=w_ps1)
+    for dim in sorted(all_ps_dims):
+        row_cells = [dim]
+        for m in models:
+            by_dim = exp2_bm.get(m, {}).get("if_primary_secondary", {}).get("by_dimension", {})
+            d = by_dim.get(dim, {})
+            pri_m = _f(d.get("primary", {}).get("mean"), 2) if "primary" in d else "—"
+            sec_m = _f(d.get("secondary", {}).get("mean"), 2) if "secondary" in d else "—"
+            row_cells += [pri_m, sec_m]
+        _row(*row_cells, widths=w_ps1)
 
     # ------------------------------------------------------------------ #
     # 4.5 SUPPLEMENT — Layout-affecting degradations (side analysis)      #
