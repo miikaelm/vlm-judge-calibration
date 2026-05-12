@@ -1550,6 +1550,70 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
         ]
         _row(label, *vals, widths=w5)
 
+    _sub("Table 4.2.4: Correct-edit control — Exp2 scores on perfect-edit stimuli (Experiment 2)")
+    lines.append("  Source: exp2.by_model.<model>.perfect_edits.score_descriptives")
+    lines.append("  Stimulus: correctly-edited image shown as the edit result (numeric_magnitude == 0).")
+    lines.append("  Expected: all dimensions at ceiling (5/5).  below_5_rate = fraction of scores < 5.")
+    lines.append("  narrow_mean = mean(instruction_following, text_accuracy, visual_consistency,")
+    lines.append("                     layout_preservation) — cross-model comparable aggregate.")
+    w_ce = [28] + [18, 14] * len(models)
+    header_ce = ["Score dimension"]
+    for m in models:
+        short = m[:14]
+        header_ce += [f"{short} mean", f"{short} <5 rate"]
+    _row(*header_ce, widths=w_ce)
+    _row(*(["-"*28] + ["-"*18, "-"*14] * len(models)), widths=w_ce)
+    for col in EXP2_SCORE_COLS + ["narrow_mean"]:
+        label = col if col != "narrow_mean" else "narrow_mean [PRIMARY]"
+        row_ce = [label]
+        for m in models:
+            sd = (
+                exp2_bm.get(m, {})
+                .get("perfect_edits", {})
+                .get("score_descriptives", {})
+                .get(col, {})
+            )
+            row_ce += [
+                _f(sd.get("mean")) if sd else "—",
+                _pct(sd.get("below_5_rate")) if sd else "—",
+            ]
+        _row(*row_ce, widths=w_ce)
+
+    lines.append("")
+    lines.append("  Per-degradation-dimension breakdown (mean + below_5_rate per score col):")
+    perf2_dims: set[str] = set()
+    for m in models:
+        perf2_dims.update(
+            exp2_bm.get(m, {}).get("perfect_edits", {}).get("by_dimension", {}).keys()
+        )
+    if perf2_dims:
+        w_cd = [28] + [16, 12] * len(models)
+        hdr_cd = ["Dimension"]
+        for m in models:
+            s = m[:12]
+            hdr_cd += [f"{s} mean", f"{s} <5 rate"]
+        # Only show narrow_mean per dimension for brevity
+        for col in ["narrow_mean", "instruction_following"]:
+            lines.append(f"    [{col}]")
+            _row(*hdr_cd, widths=w_cd)
+            _row(*(["-"*28] + ["-"*16, "-"*12] * len(models)), widths=w_cd)
+            for dim in sorted(perf2_dims):
+                row_cd = [dim]
+                for m in models:
+                    de = (
+                        exp2_bm.get(m, {})
+                        .get("perfect_edits", {})
+                        .get("by_dimension", {})
+                        .get(dim, {})
+                        .get(col, {})
+                    )
+                    row_cd += [
+                        _f(de.get("mean")) if de else "—",
+                        _pct(de.get("below_5_rate")) if de else "—",
+                    ]
+                _row(*row_cd, widths=w_cd)
+            lines.append("")
+
     # ------------------------------------------------------------------ #
     # 4.3 Exp1 Perceptual Sensitivity                                     #
     # ------------------------------------------------------------------ #
