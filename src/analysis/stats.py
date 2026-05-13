@@ -1197,6 +1197,201 @@ def _sensitivity_rank(out: dict, exp1_by_model: dict, exp2_by_model: dict) -> di
 
 
 # ---------------------------------------------------------------------------
+# Below-baseline quality-discrimination thresholds (Section 4.5.5)
+# ---------------------------------------------------------------------------
+
+def _linear_crossing(
+    x: np.ndarray,
+    y: np.ndarray,
+    target: float,
+) -> float | None:
+    """Fit y ~ x (OLS), return x* where fitted y = target. None if slope ~= 0."""
+    if len(x) < 3 or np.std(x) < 1e-9:
+        return None
+    from scipy.stats import linregress
+    slope, intercept, *_ = linregress(x, y)
+    if abs(slope) < 1e-9:
+        return None
+    return float((target - intercept) / slope)
+
+
+def _bootstrap_crossing_ci(
+    x: np.ndarray,
+    y: np.ndarray,
+    target: float,
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> tuple[float, float]:
+    """Percentile-bootstrap 95% CI for the linear-regression crossing point x*."""
+    rng = np.random.default_rng(seed)
+    crossings: list[float] = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(x), size=len(x))
+        c = _linear_crossing(x[idx], y[idx], target)
+        if c is not None and np.isfinite(c):
+            crossings.append(c)
+    if len(crossings) < 10:
+        return float("nan"), float("nan")
+    return float(np.percentile(crossings, 2.5)), float(np.percentile(crossings, 97.5))
+
+
+def _map_to_tier(x_star: float, sub: pd.DataFrame) -> str:
+    """Map a numeric x* to the smallest tier label whose max covers x*.
+
+    Uses per-tier max numeric_magnitude from the dimension's sub-DataFrame.
+    Returns 'beyond_range' when x* exceeds the largest tier.
+    Returns 'unknown' when no tier data is available.
+    """
+    if "degradation_magnitude" not in sub.columns or "numeric_magnitude" not in sub.columns:
+        return "unknown"
+    grouped = (
+        sub.groupby("degradation_magnitude")["numeric_magnitude"]
+        .agg(["max", "mean"])
+        .reset_index()
+        .sort_values("mean")
+    )
+    for _, row in grouped.iterrows():
+        if x_star <= float(row["max"]) + 1e-9:
+            return str(row["degradation_magnitude"])
+    return "beyond_range"
+
+
+def _below_baseline_thresholds(df: pd.DataFrame, exp2_by_model: dict) -> dict:
+    """Section 4.5.5: below-baseline quality-discrimination threshold analysis.
+
+    For each (model, dimension) cell:
+      - If the Spearman ρ between numeric_magnitude and narrow_mean is
+        BH-significant (from exp2_by_model): fit a linear regression
+        NM ~ numeric_magnitude, find x* where fitted NM = per-model
+        correct-edit baseline, bootstrap 95% CI on x*, map to tier.
+      - If not significant: classify as 'never_below_baseline' (mean NM ≥
+        baseline) or 'always_below_baseline' (mean NM < baseline).
+
+    Correct-edit baselines are read from exp2_by_model[model]["perfect_edits"]
+    rather than hardcoded, so they stay consistent with the rest of the report.
+
+    Parameters
+    ----------
+    df:
+        Combined DataFrame (exp1 + exp2 degraded stimuli, numeric_magnitude > 0).
+    exp2_by_model:
+        Already-computed exp2 stats dict (after BH correction).
+
+    Returns
+    -------
+    Nested dict: model -> dimension -> result dict.
+    """
+    e2 = df[
+        (df["experiment"] == "experiment_2")
+        & df["parse_success"]
+        & (df["numeric_magnitude"] > 0)
+    ].copy()
+    if "narrow_mean" not in e2.columns:
+        e2["narrow_mean"] = e2[NARROW_DIMS].mean(axis=1)
+
+    models = sorted(exp2_by_model.keys())
+    out: dict[str, dict[str, dict]] = {}
+
+    for model in models:
+        # Derive correct-edit NM baseline from already-computed perfect_edits stats
+        baseline_raw = (
+            exp2_by_model.get(model, {})
+            .get("perfect_edits", {})
+            .get("score_descriptives", {})
+            .get("narrow_mean", {})
+            .get("mean")
+        )
+        baseline = float(baseline_raw) if baseline_raw is not None else float("nan")
+
+        model_df = e2[e2["model"] == model]
+        dims = sorted(model_df["degradation_dimension"].unique())
+        out[model] = {}
+
+        for dim in dims:
+            sub = model_df[model_df["degradation_dimension"] == dim].copy()
+            if len(sub) < 4:
+                continue
+
+            x = sub["numeric_magnitude"].values.astype(float)
+            y = sub["narrow_mean"].values.astype(float)
+            mean_nm = float(np.mean(y))
+
+            # Read BH-corrected p from already-computed exp2 stats
+            nm_col = (
+                exp2_by_model.get(model, {})
+                .get("by_dimension", {})
+                .get(dim, {})
+                .get("narrow_mean", {})
+            )
+            p_corr = nm_col.get("magnitude_p_corrected") if isinstance(nm_col, dict) else None
+            p_raw  = nm_col.get("magnitude_p")           if isinstance(nm_col, dict) else None
+            # Significant if BH-corrected p < 0.05; fall back to raw p when correction absent
+            p_use  = p_corr if p_corr is not None else p_raw
+            sig    = (
+                p_use is not None
+                and not np.isnan(float(p_use))
+                and float(p_use) < _PRIMARY_ALPHA
+            )
+
+            result: dict[str, Any] = {
+                "n":             int(len(sub)),
+                "mean_nm":       round(mean_nm, 4),
+                "baseline":      round(baseline, 4) if np.isfinite(baseline) else None,
+                "significant":   sig,
+                "spearman_p_bh": round(float(p_corr), 6) if p_corr is not None and np.isfinite(float(p_corr)) else None,
+            }
+
+            if sig:
+                x_star = _linear_crossing(x, y, baseline)
+                if x_star is None:
+                    result.update({"x_star": None, "ci_lo": None, "ci_hi": None,
+                                   "tier": "slope_zero", "classification": "slope_zero"})
+                else:
+                    ci_lo, ci_hi = _bootstrap_crossing_ci(x, y, baseline)
+                    x_max = float(np.max(x))
+                    tier = (
+                        "beyond_range"
+                        if x_star > x_max
+                        else (
+                            "below_at_zero"
+                            if x_star <= 0
+                            else _map_to_tier(x_star, sub)
+                        )
+                    )
+                    classification = (
+                        "threshold_beyond_tested_range"
+                        if tier == "beyond_range"
+                        else (
+                            "always_below_baseline"
+                            if tier == "below_at_zero"
+                            else f"threshold_at_{tier}"
+                        )
+                    )
+                    result.update({
+                        "x_star":         round(float(x_star), 4),
+                        "ci_lo":          round(ci_lo, 4) if np.isfinite(ci_lo) else None,
+                        "ci_hi":          round(ci_hi, 4) if np.isfinite(ci_hi) else None,
+                        "tier":           tier,
+                        "classification": classification,
+                    })
+            else:
+                classification = (
+                    "always_below_baseline"
+                    if mean_nm < baseline
+                    else "never_below_baseline"
+                )
+                result.update({
+                    "x_star": None, "ci_lo": None, "ci_hi": None,
+                    "tier": "always_below" if mean_nm < baseline else "never_below",
+                    "classification": classification,
+                })
+
+            out[model][dim] = result
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Failure-mode table
 # ---------------------------------------------------------------------------
 
@@ -1340,6 +1535,12 @@ def compute_all_stats(
     # (needs FDR-corrected primary p-values and noop section to exist)   #
     # ------------------------------------------------------------------ #
     out["sensitivity_rank"] = _sensitivity_rank(out, exp1_by_model, exp2_by_model)
+
+    # ------------------------------------------------------------------ #
+    # Below-baseline quality-discrimination thresholds (Section 4.5.5)   #
+    # Requires BH-corrected p-values already in exp2_by_model.           #
+    # ------------------------------------------------------------------ #
+    out["below_baseline_thresholds"] = _below_baseline_thresholds(df, exp2_by_model)
 
     # ------------------------------------------------------------------ #
     # Failure-mode table (reads from all sections above)                  #
@@ -2042,6 +2243,94 @@ def save_print_report(stats: dict, path: str | Path) -> None:  # noqa: C901
             for m in models
         )
         lines.append(f"  {i:>2}. {dim:<28} mean_det={det_s}  [{bs_strs}]")
+
+    # ------------------------------------------------------------------ #
+    # 4.5.5 Below-Baseline Quality-Discrimination Thresholds             #
+    # ------------------------------------------------------------------ #
+    bbt = stats.get("below_baseline_thresholds", {})
+    if bbt:
+        _h("SECTION 4.5.5 — BELOW-BASELINE QUALITY-DISCRIMINATION THRESHOLDS")
+        lines.append("  For each (model, dimension) cell:")
+        lines.append("  sig=True  → Spearman ρ was BH-significant; shows x* (regression crossing)")
+        lines.append("              and bootstrap 95% CI, plus tier where fitted NM crosses baseline.")
+        lines.append("  sig=False → n/s; classified as 'never_below_baseline' (mean NM ≥ baseline)")
+        lines.append("              or 'always_below_baseline' (mean NM < baseline, no magnitude trend).")
+        lines.append("  'beyond_range' → x* estimated beyond the maximum tested magnitude.")
+        lines.append("  Baselines derived from exp2.by_model.<model>.perfect_edits.score_descriptives.narrow_mean.mean")
+        lines.append("")
+
+        # Baseline summary
+        lines.append("  Per-model correct-edit NM baselines:")
+        for m in models:
+            cell0 = next(iter(bbt.get(m, {}).values()), {})
+            b = cell0.get("baseline")
+            lines.append(f"    {m}: {_f(b, 3)}")
+        lines.append("")
+
+        # Compact tier table
+        bbt_dims: set[str] = set()
+        for m in models:
+            bbt_dims.update(bbt.get(m, {}).keys())
+        bbt_dims_sorted = sorted(bbt_dims)
+
+        w_bbt = [24] + [20] * len(models)
+        header_bbt = ["Dimension"] + [f"{m[:18]}" for m in models]
+        _row(*header_bbt, widths=w_bbt)
+        _row(*(["-"*24] + ["-"*20] * len(models)), widths=w_bbt)
+
+        for dim in bbt_dims_sorted:
+            row_cells = [dim]
+            for m in models:
+                cell = bbt.get(m, {}).get(dim, {})
+                if not cell:
+                    row_cells.append("—")
+                    continue
+                cls   = cell.get("classification", "?")
+                tier  = cell.get("tier", "?")
+                x_s   = cell.get("x_star")
+                ci_lo = cell.get("ci_lo")
+                ci_hi = cell.get("ci_hi")
+                sig   = cell.get("significant", False)
+                if sig and x_s is not None:
+                    ci_s = (
+                        f"[{ci_lo:.2f},{ci_hi:.2f}]"
+                        if ci_lo is not None and ci_hi is not None else "CI=?"
+                    )
+                    row_cells.append(f"{tier}  x*={x_s:.2f} {ci_s}")
+                elif sig:
+                    row_cells.append(cls)
+                else:
+                    row_cells.append(cls.replace("_", " "))
+            _row(*row_cells, widths=w_bbt)
+
+        lines.append("")
+        lines.append("  Detailed significant cells (x* and CI for fitting):")
+        for m in models:
+            baseline_v = next((c.get("baseline") for c in bbt.get(m, {}).values() if c.get("baseline") is not None), None)
+            lines.append(f"  Model: {m}  (baseline={_f(baseline_v, 3)})")
+            any_sig = False
+            for dim in bbt_dims_sorted:
+                cell = bbt.get(m, {}).get(dim, {})
+                if not cell or not cell.get("significant"):
+                    continue
+                any_sig = True
+                x_s   = cell.get("x_star")
+                ci_lo = cell.get("ci_lo")
+                ci_hi = cell.get("ci_hi")
+                tier  = cell.get("tier", "?")
+                cls   = cell.get("classification", "?")
+                mean_nm = cell.get("mean_nm")
+                ci_s = (
+                    f"[{ci_lo:.2f}, {ci_hi:.2f}]"
+                    if ci_lo is not None and ci_hi is not None else "CI=?"
+                )
+                x_str = _f(x_s, 3) if x_s is not None else "—"
+                lines.append(
+                    f"    {dim:<22}  mean_NM={_f(mean_nm,2)}  x*={x_str}  95%CI={ci_s}  tier={tier}  [{cls}]"
+                )
+            if not any_sig:
+                lines.append("    (no significant cells)")
+            lines.append("")
 
     # ------------------------------------------------------------------ #
     # FAILURE-MODE SUMMARY                                                #
