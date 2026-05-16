@@ -1,0 +1,91 @@
+\chapter{Methodology} \label{Methodology}
+
+This chapter describes the planned approach at a high level. Section~\ref{Synthetic Data Pipeline} presents the synthetic data generation strategy. Section~\ref{Model Selection and Training} describes the model selection rationale and training setup. Section~\ref{Evaluation Framework} outlines the evaluation framework. Throughout this chapter are open questions that will be resolved during implementation.
+
+\section{Synthetic Data Pipeline}
+
+\label{Synthetic Data Pipeline}
+
+The core idea of our data pipeline is to exploit the determinism of browser rendering to produce training pairs with pixel-perfect ground truth. Concretely, we use an LLM to generate pairs of HTML/CSS documents that differ by exactly one quantitative text edit, then render both through a headless browser to obtain a source image and a target image. Because the transformation is defined in code, the ground truth is exact and verifiable, unlike manually annotated datasets where spatial precision is limited by human labelling accuracy.
+
+\noindent The pipeline proceeds in three stages:
+
+\begin{enumerate}
+    \item \textbf{LLM-driven generation.} An LLM is prompted to produce an HTML/CSS document containing one or more text elements, along with a modified version in which a single quantitative edit has been applied, such as repositioning a text element, scaling it, changing its color, or replacing its content. Each generation also produces a natural language instruction describing the edit (e.g., ''Rotate the heading 30 degrees clockwise'') and structured metadata recording the exact transformation applied. The implementation details also depend on the proposed data size and used model’s price.
+
+    \item \textbf{Browser rendering.} Both HTML documents are rendered to images at a fixed resolution using a headless browser. Deterministic rendering settings are applied to minimize pixel-level noise unrelated to the intended edit.
+
+    \item \textbf{Automated validation.} Each rendered pair is checked programmatically: the text must be present and correctly rendered (verified via OCR), the spatial properties of the edited element must match the metadata, and regions outside the edit area must remain unchanged. Pairs that fail validation are discarded and/or regenerated.
+\end{enumerate}
+
+\noindent This design means the pipeline is only as good as the LLM's ability to produce valid, diverse HTML/CSS and the browser's rendering fidelity. Several open questions will be resolved through early prototyping before full-scale data generation:
+
+\begin{itemize}
+    \item \textbf{Which LLM to use for generation.} The generating model must reliably produce syntactically valid HTML/CSS with precise numerical properties. We will evaluate candidate models (e.g., DeepSeek, Claude) by manually inspecting a small batch of outputs for correctness and diversity before committing to one.
+
+    \item \textbf{What diversity is achievable and necessary.} The range of fonts, colors, layout complexities, and edit magnitudes in the dataset will be determined empirically. Initial prototyping will reveal which axes of variation the LLM handles reliably and which require more constrained prompting or post-hoc augmentation.
+
+    \item \textbf{Dataset scale.} The total number of pairs will depend on generation throughput, validation pass rates, (and maybe early fine-tuning experiments that indicate how much data is needed to observe measurable improvement). We anticipate a dataset on the order of thousands to low tens of thousands of pairs, but this will be calibrated during implementation.
+
+    \item \textbf{Instruction format.}
+\end{itemize}
+
+
+\section{Model Selection and Training}
+
+\label{Model Selection and Training}
+
+To address RQ2, we require one diffusion-based and one autoregressive (VAR) model, both capable of instruction-guided image editing and available for fine-tuning. Based on the landscape surveyed in Chapter~\ref{Related Work}, our current candidates are Qwen-Image \cite{wu2025qwenimage} as the diffusion representative and VAREdit \cite{mao2026varedit} as the VAR representative. Both are open-source, represent strong baselines within their respective architectural families, and have demonstrated competence on text-related editing tasks.
+
+However, model selection is not fully finalized. Before committing, we will verify that each model can be fine-tuned within our available compute budget among other things. If either candidate proves impractical, we will select the strongest available alternative from the same architectural family.
+
+Each model will be evaluated in two configurations: the publicly released pre-trained checkpoint (\textit{baseline}) and the same checkpoint after fine-tuning on our synthetic dataset (\textit{fine-tuned}). This paired design isolates the effect of the synthetic data from differences in pre-training. Fine-tuning hyperparameters (learning rate, number of epochs, which components to train or freeze) will be determined through preliminary experiments once the models and data are in hand.
+
+We also intend to include at least one commercial model, likely Gemini 3 Pro Image (Nano Banana Pro) \cite{google2025nanobanana}, as an additional reference point. Since commercial models cannot be fine-tuned, they serve only as external baselines for contextualizing our results.
+
+
+\section{Evaluation Framework}
+
+\label{Evaluation Framework}
+
+Our evaluation is designed around the diagnostic, disaggregated philosophy advocated by Raji et al.\ \cite{raji2021everything} and discussed in Section~\ref{Evaluation}. The key principle is that composite scores obscure architecture-specific failure modes; we therefore evaluate atomic operations individually. The evaluation has two components.
+
+\subsection{Diagnostic Evaluation on Synthetic Test Set}
+
+\label{Diagnostic Evaluation}
+
+A held-out portion of the synthetic dataset serves as a diagnostic test set. Because the ground truth is pixel-perfect, we can measure editing accuracy with high precision. We plan to evaluate along six dimensions, each targeting a distinct aspect of quantitative editing:
+
+\begin{enumerate}
+    \item \textbf{Spatial relocation accuracy}: how close is the edited text to the target position?
+    \item \textbf{Scaling precision}: how close is the rendered size of the text to the target size?
+    \item \textbf{Styling precision}: how close is the rendered font styling of the text to the target text?
+    \item \textbf{Color change fidelity}: how close is the resulting text color to the target color?
+    \item \textbf{Content replacement correctness}: does the text say the right thing after a content swap?
+    \item \textbf{Unintended modification}: has the model altered image regions that should be unchanged?
+\end{enumerate}
+
+\noindent The specific metrics for each dimension (e.g., pixel distance, bounding box IoU for spatial accuracy, RGB distance for color fidelity, character error rate) will be selected during the evaluation development phase. The guiding criterion is that each metric must produce an interpretable, per-sample signal that can be disaggregated by architecture, edit type, and edit magnitude, enabling the comparative analysis required by RQ2.
+
+An important open question is whether these six dimensions are sufficient or whether additional diagnostic axes will emerge during implementation. For example, the TAS metric proposed by STELLAR \cite{seo2025stellar} could be valuable for measuring style preservation of text elements, but its inclusion will depend on implementation feasibility within the project timeline.
+
+\subsection{External Benchmark Evaluation}
+
+\label{TextEditBench Evaluation}
+
+To assess generalizability (RQ1a), we evaluate all model configurations on TextEditBench \cite{gui2025texteditbench}, following its standard protocol. TextEditBench includes both qualitative and quantitative editing tasks, allowing us to observe whether fine-tuning on our quantitative synthetic data transfers to the benchmark's quantitative categories.
+
+\subsection{Architectural Comparison}
+
+\label{Comparative Analysis}
+
+The evaluation is structured to support the architectural comparison central to RQ2. Based on the limitations identified in Section~\ref{Architectural Limitations}, we expect the two architectures to exhibit qualitatively different failure patterns. Specifically:
+
+\begin{itemize}
+    \item The diffusion model may show higher rates of unintended modification near the edit region, consistent with the attention leakage problem documented for text rendering in diffusion models \cite{shi2025wordcon}.
+    \item The VAR model may struggle disproportionately with small spatial displacements or font style changes that are difficult to represent at coarse scales, and may exhibit pixel-level fidelity issues stemming from generator-tokenizer inconsistency \cite{he2025rear}.
+\end{itemize}
+
+\noindent These are directional hypotheses to guide analysis, not rigid predictions. The diagnostic evaluation is designed to surface unexpected patterns as well, and we will report all findings regardless of whether they confirm these expectations or not. Statistical methods for comparing error distributions across architectures (e.g., non-parametric tests with appropriate corrections for multiple comparisons) will be specified during the evaluation development phase.
+
+

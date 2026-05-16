@@ -1,0 +1,127 @@
+% Document template suitable for use as a LaTeX master-file 
+% for thesis works in University of Turku Department of Computing
+%
+% Technical usage guide: https://tech.utugit.fi/soft/thesis/doc/doc/overview/
+% 
+
+\documentclass[language=english,version=final,mainfont=none,sharelatex=false]{utuftthesis}
+\setcounter{secnumdepth}{2}
+\setcounter{tocdepth}{2}
+\usepackage{float}
+\usepackage[caption=false]{subfig}
+
+% Define the algorithm environment
+%\makeatletter
+\providecommand\textquotedblplain{%
+  \bgroup\addfontfeatures{Mapping=}\char34\egroup}
+\providecommand{\tabularnewline}{\\}
+\floatstyle{ruled}
+\newfloat{algorithm}{tbp}{loa}
+\providecommand{\algorithmname}{Algoritmi}
+\floatname{algorithm}{\protect\algorithmname}
+%\makeatother
+
+\addbibresource{Bibliografia.bib}
+
+\begin{document}
+
+\pubyear{2026}
+\pubmonth{x}
+\publab{TurkuNLP}
+\publaben{TurkuNLP}
+\pubtype{msc}
+\title{Name of Thesis - To be decided}
+\author{Miikael-Edvard Mändmets}
+
+\maketitle
+% \input{abstract.tex}
+
+% mandatory
+\tableofcontents
+
+% if you want a list of figures
+% \listoffigures
+
+% if you want a list of tables
+% \listoftables
+
+% if you want a list of acronyms
+% \listofacronyms
+
+% change the name if the default doesn't sound right
+% \renewcommand{\algorithmname}{\listingscaption}
+
+% The thesis starts here.
+
+
+\input{01introduction.tex}
+\input{02relatedwork.tex}
+\input{03methodology.tex}
+\input{04evaluationanddiscussion.tex}
+\input{05limitations.tex}
+\input{06conclusion.tex}
+\input{90proposaladditions.tex}
+
+%\input{file_name_of_chapter_x}
+%\input{file_name_of_chapter_y}
+
+% The thesis main content ends here.
+
+\printbibliography
+
+\begin{comment}
+Important! Create the appendix chapters with command \textbackslash appchapter\{some
+name\} instead of \textbackslash chapter\{some name\} for the automagic
+page counting to work!
+\end{comment}
+
+\begin{comment}
+\appchapter{Liitedokumentti}
+
+Liitteen ohjelmakoodi \ref{alg:Tyyppiluokka-Monad} kuvaa matemaattisen
+monadirakenteen pohjalta rakentuvan Haskellin tyyppiluokan. Tyyppiluokan
+voi nähdä eräänlaisena abstraktina ohjelmointirajapintana (API\nomenclature[API]{API}{Application Programming Interface}),
+joka muodostaa ohjelmoijalle abstraktin ohjelmointikielen käyttöliittymän
+(UI\nomenclature[UI]{UI}{User Interface}).
+
+\begin{algorithm}[tbh]
+\begin{minted}{haskell}
+class Monad m where
+    ( >>= )         :: m a -> (a -> m b) -> m b
+    return          :: a                 -> m a
+
+    fail            :: String            -> m a
+    (>>)            :: m a -> m b        -> m b
+    m >> k          =  m >>= \_ -> k       -- default
+
+instance Monad IO where  ...               -- omitted
+\end{minted}
+
+\caption{Tyyppiluokka 'Monad'.\label{alg:Tyyppiluokka-Monad}}
+\end{algorithm}
+
+\newpage{}
+
+Ensimmäisen liitteen toinen sivu. Ohjelmalistaus \ref{alg:Monadin-kayttoa}
+demonstroi vielä monadin käyttöä.
+
+\begin{algorithm}[tbh]
+\begin{minted}{haskell}
+main =
+return "Your name:" >>=
+putStr >>=
+\_ -> getLine >>=
+\n -> putStrLn ("Hey " ++ n)
+\end{minted}
+
+\caption{Monadin käyttöä.\label{alg:Monadin-kayttoa}}
+\end{algorithm}
+
+
+\appchapter{Liitedokumentti 2}
+
+Tässä esimerkki\pagebreak{}
+
+toisesta kaksisivuisesta liitteestä.
+\end{comment}
+\end{document}

@@ -1,0 +1,142 @@
+\chapter{Scope and Risks} \label{Scope and Risks}
+
+\section{Scope}
+
+\label{Scope}
+
+This work spans three interconnected contributions: a synthetic data pipeline for quantitative text editing, a diagnostic evaluation framework, and a comparative analysis across diffusion and autoregressive architectures. These form a coherent package, but the scope is deliberately structured so that contributions can be shed if necessary without undermining the thesis.
+
+At minimum, the thesis delivers the synthetic data pipeline and the fine-tuning of at least one model. Even if training produces poor results, the process of designing the pipeline, the decisions made during data generation, and the analysis of why training did or did not work will be a contribution. The pipeline itself, using LLM-generated HTML/CSS and browser rendering for pixel-perfect ground truth, is, to our knowledge, a novel approach to generating quantitative editing data, and documenting its strengths and limitations has value regardless of downstream model performance.
+
+Adding the diagnostic evaluation framework significantly strengthens the work. If the fine-tuned model improves on some editing dimensions but not others, the disaggregated evaluation provides the resolution to characterize exactly where and how. If training fails entirely, the evaluation applied to baseline models still produces useful findings about current model capabilities on quantitative text editing. The core diagnostic metrics, spatial distance, size error, color distance, OCR string comparison, and pixel difference in non-edit regions, are conceptually straightforward to implement, and an estimation is that a working evaluation pipeline can be built within two to three weeks.
+
+The architectural comparison between diffusion and VAR models is the most novel but also the most contingent contribution. Comparing how these two families fail differently on quantitative tasks has not, to our knowledge, been done before, and the directional hypotheses derived from known architectural limitations (attention leakage in diffusion, scale-mismatch and tokenizer inconsistency in VAR) give the comparison analytical substance. However, this contribution requires successfully fine-tuning both models, which depends on factors not fully within our control.
+
+
+\section{Risks}
+
+\label{Risks}
+
+We identify the following risks, ordered roughly by likelihood and impact:
+
+\textit{VAREdit training feasibility}. VAREdit has not released training code as of writing. If training code cannot be obtained from the authors or reconstructed, the architectural comparison as currently framed becomes infeasible. Mitigation: we will contact the authors early in the project and, in parallel, assess whether another VAR-based model could be adapted for instruction-guided editing. If no VAR model can be fine-tuned, the thesis pivots to a deeper single-architecture study with the diffusion model, using the diagnostic framework to characterize its failure modes in detail. The architectural comparison could still be performed at the baseline level (without fine-tuning) by evaluating pre-trained models from both families, though this would weaken the contribution.
+
+\textit{Compute constraints.} Both data generation (LLM API costs for HTML/CSS generation) and model training (GPU hours for fine-tuning) require compute that may be limited. For data generation, the cost per example will be established during prototyping; if expensive models are required for sufficient quality, the dataset scale may need to be reduced. For training, LoRA-based fine-tuning substantially reduces GPU requirements compared to full fine-tuning, and we plan to use this as the default approach. The scale of access to CSC compute resources is an open question; if access is insufficient, the dataset size and number of training runs may need to be scaled back.
+
+\textit{Synthetic data quality and pipeline reliability.} The pipeline depends on three components working together: the LLM producing valid HTML/CSS with correct numerical properties, the headless browser rendering deterministically, and OCR-based validation catching errors reliably. Each introduces potential failure points. The LLM may produce syntactically valid but semantically incorrect code (e.g., CSS that technically renders but places text off-screen). The browser may introduce anti-aliasing or font substitution artifacts that create pixel-level noise in the ground truth. The OCR validation may fail on unusual fonts or small text, either passing bad examples or rejecting good ones. These risks are best addressed through prototyping: we will generate and manually inspect a small batch of examples early to identify systematic issues before investing in full-scale generation.
+
+\textit{Domain gap.} The synthetic training data consists of browser-rendered HTML/CSS, which has a distinctly digital, clean appearance. Models fine-tuned on this data may improve on similarly clean inputs but fail to generalize to the more varied images in TextEditBench, or may even degrade due to distribution shift. We will monitor for this by evaluating on TextEditBench periodically during training rather than only at the end, allowing early detection of negative transfer. If performance on TextEditBench degrades, we will investigate whether the issue lies in the training process itself or in a mismatch between TextEditBench's evaluation assumptions and our task framing. That said, the primary application of quantitative text editing is in synthetic, designed artifacts such as posters, infographics, and charts, which are stylistically closer to our training distribution than natural photographs. Some degree of domain gap with naturalistic images is therefore expected and acceptable. It is also worth noting that TextEditBench itself largely consists of digital and designed images rather than naturalistic photographs, which limits the severity of this risk in practice.
+
+\textit{Timeline and sequential dependency.} The project is structured sequentially: the data pipeline must work before training can begin, and training must complete before evaluation is meaningful. The data pipeline is the foundation of all other contributions, and its development involves unknowns, LLM output quality, validation reliability, iteration cycles, that make precise upfront scheduling difficult. The prototyping phase will substantially reduce this uncertainty by revealing how long generation and validation take per example and what failure rates to expect, enabling more realistic planning of subsequent phases. If the pipeline takes longer than hoped, the scope degradation described above provides a framework for prioritizing: at that point, we assess what is feasible in the remaining time and decide which contributions to pursue at full depth versus which to scale back or set aside.
+
+
+\chapter{Schedule} \label{Schedule}
+
+We aim to complete the thesis by June 1, 2026, which is 15 weeks from the week of February 16, 2026. There is approximately three weeks of literature review and proposal writing completed. Table~\ref{tab:schedule} summarizes the planned timeline across 14 weeks, leaving one week of explicit buffer. The data pipeline phase (Weeks 5--8) contains additional implicit buffer, as four weeks is a conservative allocation for a pipeline whose core logic will already be prototyped and designed in earlier phases. The later phases have sufficient buffer for the minimum viable scope (synthetic data pipeline and single-model training) but leave limited flexibility for the full scope including architectural comparison. Writing does not need to be completed by June 1 and can extend into later June if necessary.
+
+Each phase produces thesis content alongside technical work, so writing is distributed throughout the project rather than concentrated at the end. The checkpoint at the end of the data generation phase (Week~8) is the key decision point for scope: the remaining time and the state of the data and models at that point will determine whether the full scope is pursued or whether it is reduced as described in Section~\ref{Scope and Risks}.
+
+
+\begin{table}[H]
+\centering
+\caption{Planned project timeline. Weeks are counted from the week of February 16, 2026.}
+\label{tab:schedule}
+\begin{tabular}{cll}
+\hline
+\textbf{Weeks} & \textbf{Phase} & \textbf{Key outputs} \\
+\hline
+0--2  & Prototyping \& sanity checks & Model \& pipeline feasibility \\
+3--4  & Evaluation \& pipeline design & Metrics selected, pipeline design \\
+5--8  & Data pipeline build \& generation & Complete dataset; \textit{scope check} \\
+9--11 & Fine-tuning \& training & Trained model(s) \\
+12--13 & Evaluation \& analysis & Results, comparative analysis \\
+14    & Writing \& cleanup & Final thesis document \\
+\hline
+\end{tabular}
+\end{table}
+
+
+\textbf{Weeks 0--2: Prototyping and sanity checks.} This phase resolves the key unknowns in the methodology. We download and run the TextEditBench and candidate models (Qwen-Image, VAREdit), verify that fine-tuning is feasible for each model, and contact the VAREdit authors regarding training code if necessary. In parallel, we generate a small batch of synthetic examples using candidate LLMs to test the full HTML/CSS generation and browser rendering pipeline end to end, and run OCR on the outputs to verify validation feasibility. Compute access is confirmed during this phase. By the end of week~2, the methodology chapter is updated with concrete details: which LLM is used for generation, which models will be fine-tuned, and whether VAREdit training is viable or a fallback is needed.
+
+\textbf{Weeks 3--4: Evaluation exploration and pipeline design.} We apply baseline (non-fine-tuned) models to a small set of quantitative editing tasks and attempt to extract the diagnostic signals described in Section~\ref{Diagnostic Evaluation}: bounding box positions, rendered text size, color values, OCR string accuracy, and pixel differences in non-edit regions. This reveals which metrics are practical to compute reliably and which require adjustment. The findings feed directly back into the data pipeline design, ensuring that the generated data includes all metadata and formatting needed for downstream evaluation.
+
+\textbf{Weeks 5--8: Data pipeline build and generation.} The full generation pipeline is implemented, tested on an initial batch of 100--500 examples with manual quality assurance, and then scaled to full dataset generation. The dataset description and pipeline details are written up for the thesis during this phase. At the end of week~8, we assess the state of the project and make scope decisions: if both models are trainable and the data is complete, we proceed with the full plan; if not, we prioritize according to the degradation strategy described in Section~\ref{Scope and Risks}.
+
+\textbf{Weeks 9--11: Fine-tuning and training.} Model fine-tuning is conducted using the synthetic dataset. Depending on the scope decision at the checkpoint, this involves one or both architectures. Training details and observations are documented as they occur.
+
+\textbf{Weeks 12--13: Evaluation and analysis.} Diagnostic evaluations are run on the synthetic test set, followed by TextEditBench evaluation for generalizability. If both architectures were trained, the architectural comparison is conducted. Results and analysis are written up during this phase.
+
+\textbf{Week 14: Writing and cleanup.} Final assembly of all chapters, conclusion, appendix, and proofreading. Because writing is distributed across earlier phases, this week is primarily for integration and polish rather than drafting from scratch.
+
+\chapter{Feedback} \label{Feedback}
+
+\textit{Goals.} The goals and success criteria of this thesis are clear. They are somewhat open-ended due to the possibility of scope changes during implementation, but the scope degradation process is well-defined in Section 7.1, and I am confident that if scope changes become necessary, I can adapt without losing the core contribution.
+
+\textit{Progress.} At this stage, I have a clear view of the field and have identified what needs to be worked on, which is verbalized in this document. The literature review is complete and the research questions, methodology, and risk management are laid out. Critically, I have not yet prototyped with the models, benchmarks, or the data pipeline. However, looking from the perspective of the minimum viable project, Qwen-Image has a large community and established fine-tuning workflows, so it is certain that it is trainable. The training data is generated by myself, so the minimum scope is reachable as-is. If TextEditBench does not work for some reason, then that is also the case for every other researcher, which would make the diagnostic evaluation contribution of this work even more important. The VAREdit model and the VAR architecture comparison is the most critical open risk and needs to be resolved as soon as possible. The methodology section is thin at this stage, as it depends on prototyping outcomes, and will need to be expanded within the next one to two weeks. These points have all been assessed in the schedule and risk sections.
+
+\textit{Next steps.} I have not conducted research like this before and I have not used LaTeX before. I need a sanity check from the supervisor to calibrate, as I feel that my approach and progress are good but I lack grounded confirmation. The first two weeks will be critical in determining where the thesis goes. The fact that I have not done prototyping yet is keeping things more uncertain than I would like. My concrete next steps are:
+
+\section{To do list} \label{To do list}
+
+
+\begin{itemize}
+
+  \item[$\boxtimes$] Compute budget plan -> Not exact, but a rough estimate
+  \item[$\boxtimes$] Download and run Qwen-Image inference on a sample editing task
+  \item[$\boxtimes$] Contact VAREdit authors about training code and assess alternative VAR models -> Seems like the training code is in github
+  \item[$\square$] Run the TextEditBench evaluation script on a baseline model
+  \item[$\boxtimes$] Confirm CSC compute access
+  \item[$\square$] Confirm CSC access from Vietnam
+  \item[$\boxtimes$] Meet with supervisor to validate the approach and calibrate expectations
+  \item[$\square$] Generate 10–20 synthetic HTML/CSS pairs to test the pipeline concept end-to-end
+  \item[$\square$] The first edit type pipeline, probably text color change. Data (Train + test), evaluations, train, analyze
+  \item[$\square$] 512x512 resolution cap
+  \item[$\square$] Determine browser render determinism
+  % \item[$\boxtimes$] Completed task
+\end{itemize}
+
+\noindent This checklist will be maintained and expanded as the project progresses.
+
+\chapter{Tests} \label{Tests}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/ex_easy.png}
+    \caption{Prompt: Change the color of the main title 'MINIMALIST' to bright blue hex code #3B82F6.}
+    \label{fig:my_label}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/varedit_output.png}
+    \caption{VAREdit: Color is not exact, but quite close. The fonts and design "melts"}
+    \label{fig:my_label}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/qwen_output.png}
+    \caption{QWen: Color is quite far away, otherwise result is very good. Makes me woner, does it use a bounding box and edits only a subsection of an image?}
+    \label{fig:my_label}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/ex_center.png}
+    \caption{Center the title text horizontally within the poster}
+    \label{fig:my_label}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/varedit_output_center.png}
+    \caption{Does not change much. But again details are melting}
+    \label{fig:my_label}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/qwen_output_center.png}
+    \caption{Completely different design}
+    \label{fig:my_label}
+\end{figure}

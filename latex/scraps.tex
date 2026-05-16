@@ -1,0 +1,42 @@
+So I started off with an intuition that current MLLMs have gotten quite good at editing text and replacing text and so on, but they are still quite bad at following more specific requests, e.g. "make the title 20\% bigger", "he borders are 1px thick, make them 3px". And at the same time I was thinking that the browser rendering machine + current generation LLM web dev skills are so good that there has to be a way to distill information into the model visually. So I thought combining these two thoughts: generating synthetic data for quantitative image editing.
+
+## CoSyn
+
+When I started my search, I found a paper (CoSyn, Yang et al. (2025)) that used different rendering machines (11, like matplotlib, html+css, LaTeX) to create synthetic data. Most importantly in the paper they created a quite diverse dataset from those. (Tangent idea#1: another topic could be to research methods how to really diversify synthetic data from LLMs as a lot of papers came to the same conclusion: data diversity is incredibly important). This CoSyn paper I think is SotA so far for using 2d rendering machines to create synthetic data. The previous work regarding this was quite strictly using charts or something else. (something like chartLlama and like Design2Code. Design2Code is interesting: They had LLMs create charts with code, but showed the model just an image of the chart and then had the model approximate the underlying code, which apparently boosted "visual intelligence").
+
+CoSyn's second "approach" was to create synthetic pointing data, because they could very easily retrieve the coordinates of an element using the browser's DOM, they could train a model to understand coordinates within an image and in a sense get an understanding of spatiality. The paper suggests can be impactful for agentic workflows. (Higher level problem #1: Lack of Spatial intelligence)
+
+CoSyn and also other papers often mention VLLMs "lack" of reasoning capabilities . For example if you show a receipt to a VLLM and ask to make the coffee cost 6€ instead of 5€, it does update the 5€, but doesn't update the "Total €" in the receipt below. I think there was a mention that VLLMs are notoriously bad at math. So "20% bigger" requests are difficult to understand (Higher level problem #2: Lack of "Reasoning" in visual context)
+## The problem with my idea and how it connects to the field
+
+As I dug deeper I think I found that these higher level problems #1 and #2 are quite prevalent in the field (TextEditBench,  Gui et al., 2025) and that is where a lot of the research is for VLLM right now(?). My proposed idea of quantitative image editing is in a difficult spot as it involves both these two higher level problems that are not "solved" yet. It makes me a little bit "worried" of:
+1. Not getting positive results and
+2. Focusing on the trees and not the forest. 
+
+### Architectural problems
+There are papers that mention that architecturally diffusion models can not understand spatial "coordinates" and that they leak attention to other parts of the image. The papers suggest architectural changes to the models which can deal with it. I like the thought of "data is king" and would rather not solve "small problems" by making changes to the model's architecture for "specific to that specific small problem" . 
+
+Alas, there has been a move in the field to a Visual Autoregressive(VAR) architecture which is similar to how transformers work if I understood it correctly. Google Nano Banana Pro is an example which I think right now holds SotA for image gen in many different benchmarks. I would probably approach my proposed problem with this architecture. Though, I haven't searched yet if there is research of this architecture fixing the spatial intelligence problem (next step in reading, probably critical for my research).
+
+## Research
+
+After doing reading, I think my proposed research topic is still interesting and worth looking into. The TextEditBench (Gui et al., 2025) paper is likely the "cornerstone" that I would build the research around. As in, TextEditBench found that this quantitative editing is a problem that VLLMs struggle with. And they created a benchmark for that.
+
+I still need a little bit of reading to solidify the research question, but it would be along the lines of:
+TextEditBench (Gui et al., 2025), noted that VLLMs are still bad at quantitative text editing. There is research found that diffusion models have architectural limitations why this is the case. For the newer VAR VLLM architectures, I believe (after reading) it is due to lack of data. I will create data, train a model and measure the improvement with TextEditBench.
+
+As for the approach of the research, there can be two different ways to do it:
+1. Synthetic data, CoSyn (Yang et al. (2025)) as inspiration
+	1. The goal is to create a dataset that forces the model to learn the mapping between a quantitative instruction (e.g., "10px border", "scale 1.2x") and the pixel-level execution of that instruction.
+	2. use an LLM to generate diverse HTML/CSS code. Semantic content does not really matter
+	3. focus on elements that have clear quantitative properties: borders, font sizes, image dimensions, padding, margin, hex colors
+	4. use a script/LLM to make isolated changes to the visual properties
+	5. render the state before and after the code change
+	6. generate the prompt that describes strictly the visual change we just scripted
+2. Tool use (Neuro-Symbolic)
+	1. Very-very far fetched, as I was writing this I understood that this is very reaching, and synthetic data would likely not be needed. But might be interesting to prototype
+
+
+
+
+
