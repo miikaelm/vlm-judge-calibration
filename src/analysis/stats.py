@@ -1375,11 +1375,16 @@ def _below_baseline_thresholds(df: pd.DataFrame, exp2_by_model: dict) -> dict:
                         "classification": classification,
                     })
             else:
-                classification = (
-                    "always_below_baseline"
-                    if mean_nm < baseline
-                    else "never_below_baseline"
-                )
+                margin = 0.1
+                if mean_nm < baseline - margin:
+                    classification = "always_below_baseline"
+                    tier = "always_below"
+                elif mean_nm > baseline + margin:
+                    classification = "never_below_baseline"
+                    tier = "never_below"
+                else:
+                    classification = "indistinguishable_from_baseline"
+                    tier = "at_baseline"
                 result.update({
                     "x_star": None, "ci_lo": None, "ci_hi": None,
                     "tier": "always_below" if mean_nm < baseline else "never_below",
