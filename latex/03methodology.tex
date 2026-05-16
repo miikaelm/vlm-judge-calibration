@@ -1,91 +1,465 @@
 \chapter{Methodology} \label{Methodology}
 
-This chapter describes the planned approach at a high level. Section~\ref{Synthetic Data Pipeline} presents the synthetic data generation strategy. Section~\ref{Model Selection and Training} describes the model selection rationale and training setup. Section~\ref{Evaluation Framework} outlines the evaluation framework. Throughout this chapter are open questions that will be resolved during implementation.
+The study measures how reliably Vision-Language Models can detect controlled, quantified errors in text-in-image editing results. The core design is a sensitivity analysis of VLM judges via controlled degradation stimuli: we generate image pairs where the ``edited'' result contains a precisely parameterised degradation from the correct output, evaluate multiple VLMs on these pairs using the same prompts as existing text-editing benchmarks, and measure how judge scores change as the size of the error grows, separately for each error type.
 
-\section{Synthetic Data Pipeline}
+The stimulus generation pipeline produces triples of images (source, ground truth, degraded) rendered from HTML/CSS templates via a headless Chromium browser. This rendering-based approach gives pixel-accurate ground truth for each of twelve quantitative degradation dimensions (colour offset in CIEDE2000 $\Delta E$, spatial displacement in pixels, scaling error as percentage, rotation in degrees, font weight as CSS numeric value, font style, letter spacing in pixels, opacity reduction, font family substitution) plus three image-level degradations (Gaussian noise, JPEG compression, Gaussian blur).
 
-\label{Synthetic Data Pipeline}
+Degradation magnitudes are sampled continuously from per-tier windows rather than fixed points, producing a more faithful characterisation of the sensitivity curve. All stimuli are fully reproducible from their metadata via a seeded random number generator. The resulting corpus of 703 stimuli spans eight edit types, twelve-plus degradation dimensions, and four layouts.
 
-The core idea of our data pipeline is to exploit the determinism of browser rendering to produce training pairs with pixel-perfect ground truth. Concretely, we use an LLM to generate pairs of HTML/CSS documents that differ by exactly one quantitative text edit, then render both through a headless browser to obtain a source image and a target image. Because the transformation is defined in code, the ground truth is exact and verifiable, unlike manually annotated datasets where spatial precision is limited by human labelling accuracy.
+Each stimulus is evaluated by each VLM under two experimental conditions. Experiment 1 (perceptual sensitivity) presents the model with the ground truth and degraded images and asks only whether they differ, isolating raw visual discrimination. Experiment 2 (edit judgment) presents the source, edit instruction, and degraded result, the actual task benchmarks require VLMs to perform. The gap between Experiment 1 and Experiment 2 scores on the same stimulus tests whether raw sensitivity to a degradation translates into correctly judging edit quality, and quantifies any reasoning overhead cost if one exists.
 
-\noindent The pipeline proceeds in three stages:
-
-\begin{enumerate}
-    \item \textbf{LLM-driven generation.} An LLM is prompted to produce an HTML/CSS document containing one or more text elements, along with a modified version in which a single quantitative edit has been applied, such as repositioning a text element, scaling it, changing its color, or replacing its content. Each generation also produces a natural language instruction describing the edit (e.g., ''Rotate the heading 30 degrees clockwise'') and structured metadata recording the exact transformation applied. The implementation details also depend on the proposed data size and used model’s price.
-
-    \item \textbf{Browser rendering.} Both HTML documents are rendered to images at a fixed resolution using a headless browser. Deterministic rendering settings are applied to minimize pixel-level noise unrelated to the intended edit.
-
-    \item \textbf{Automated validation.} Each rendered pair is checked programmatically: the text must be present and correctly rendered (verified via OCR), the spatial properties of the edited element must match the metadata, and regions outside the edit area must remain unchanged. Pairs that fail validation are discarded and/or regenerated.
-\end{enumerate}
-
-\noindent This design means the pipeline is only as good as the LLM's ability to produce valid, diverse HTML/CSS and the browser's rendering fidelity. Several open questions will be resolved through early prototyping before full-scale data generation:
-
-\begin{itemize}
-    \item \textbf{Which LLM to use for generation.} The generating model must reliably produce syntactically valid HTML/CSS with precise numerical properties. We will evaluate candidate models (e.g., DeepSeek, Claude) by manually inspecting a small batch of outputs for correctness and diversity before committing to one.
-
-    \item \textbf{What diversity is achievable and necessary.} The range of fonts, colors, layout complexities, and edit magnitudes in the dataset will be determined empirically. Initial prototyping will reveal which axes of variation the LLM handles reliably and which require more constrained prompting or post-hoc augmentation.
-
-    \item \textbf{Dataset scale.} The total number of pairs will depend on generation throughput, validation pass rates, (and maybe early fine-tuning experiments that indicate how much data is needed to observe measurable improvement). We anticipate a dataset on the order of thousands to low tens of thousands of pairs, but this will be calibrated during implementation.
-
-    \item \textbf{Instruction format.}
-\end{itemize}
+The analysis maps per-dimension sensitivity curves, estimates just-noticeable-difference thresholds, computes blind-spot rates, and ranks dimensions by model sensitivity. Statistical inference is based on Spearman rank correlations between numeric magnitude and score, with Benjamini--Hochberg correction for multiple comparisons.
 
 
-\section{Model Selection and Training}
+\section{Design Rationale} \label{Design Rationale}
 
-\label{Model Selection and Training}
+\subsection{The Problem Being Addressed}
 
-To address RQ2, we require one diffusion-based and one autoregressive (VAR) model, both capable of instruction-guided image editing and available for fine-tuning. Based on the landscape surveyed in Chapter~\ref{Related Work}, our current candidates are Qwen-Image \cite{wu2025qwenimage} as the diffusion representative and VAREdit \cite{mao2026varedit} as the VAR representative. Both are open-source, represent strong baselines within their respective architectural families, and have demonstrated competence on text-related editing tasks.
+Recent work in text-in-image editing has converged on a common evaluation paradigm: present a Vision-Language Model (VLM) with an original image, an edit instruction, and the edited result, then ask the model to score the quality of the edit on a multi-dimensional rubric. This VLM-as-judge protocol has been adopted in TextEditBench \cite{gui2025texteditbench}, REDEdit-Bench, and the Tencent/WeChat evaluation framework, among others. The underlying assumption, that VLMs can reliably detect the kinds of errors text-editing models produce, has been treated as a given rather than a verified property.
 
-However, model selection is not fully finalized. Before committing, we will verify that each model can be fine-tuned within our available compute budget among other things. If either candidate proves impractical, we will select the strongest available alternative from the same architectural family.
+This thesis measures that assumption directly. Rather than proposing a new evaluation protocol, we audit the existing one: we construct stimuli where the ground truth deviation is known with machine precision, feed them through the same VLM-as-judge pipeline the field already uses, and observe how the judge's output varies as a function of the magnitude and type of the error. The question is not ``does this VLM give high scores to good edits?'' but rather ``at what error magnitude does this VLM begin to reliably penalise bad edits, and does that threshold differ across error dimensions?''
 
-Each model will be evaluated in two configurations: the publicly released pre-trained checkpoint (\textit{baseline}) and the same checkpoint after fine-tuning on our synthetic dataset (\textit{fine-tuned}). This paired design isolates the effect of the synthetic data from differences in pre-training. Fine-tuning hyperparameters (learning rate, number of epochs, which components to train or freeze) will be determined through preliminary experiments once the models and data are in hand.
+\subsection{Why Controlled Degradations Rather Than Real Model Outputs}
 
-We also intend to include at least one commercial model, likely Gemini 3 Pro Image (Nano Banana Pro) \cite{google2025nanobanana}, as an additional reference point. Since commercial models cannot be fine-tuned, they serve only as external baselines for contextualizing our results.
+The most natural alternative to our approach would be to collect outputs from actual text-editing models, have annotators label them as correct or incorrect, and measure how often the VLM judge agrees. Several considerations motivated our departure from this design.
+
+\textbf{Ground-truth ambiguity.} Real editing model outputs contain stochastic failure modes (font bleed, hallucinated strokes, background texture inconsistencies) that are difficult to characterise precisely. In the sensitivity analysis, the target (the true quality of the stimulus) must be known unambiguously; otherwise, disagreement between the VLM judge and the ground truth is uninterpretable.
+
+\textbf{Confounded error dimensions.} When an editing model fails, it typically fails across multiple dimensions simultaneously (e.g., the text is placed incorrectly and has a slight colour shift). Attributing the VLM's score to any one error dimension requires the ability to isolate that dimension, which is not possible when the stimulus is generated by an opaque generative model.
+
+\textbf{Reproducibility.} A synthetic pipeline with precisely defined parameters is fully reproducible. Every stimulus can be regenerated from its metadata. This is important both for replication and for systematic expansion of the stimulus set.
+
+\textbf{Coverage of the sensitivity curve.} Calibration curves require many observations at each magnitude level. Collecting real editing model outputs at specific, controlled error magnitudes is impractical; generating synthetic stimuli with exactly the desired magnitude is straightforward by construction.
+
+The chosen approach, stimuli generated by a browser rendering engine with known CSS/DOM-level perturbations, gives pixel-accurate ground truth for every degradation dimension, at the cost of scope: the study characterises VLM sensitivity to parametric, rendered-text degradations, not to the full distribution of generative model failures. We return to this limitation in Section~\ref{Control Stimulus Analysis} and in the discussion.
+
+\subsection{Why These Degradation Dimensions}
+
+The set of degradation dimensions was chosen to span the properties that text-editing benchmarks evaluate and that editing models are asked to manipulate: spatial position, typographic scale, colour, font family and style, and image-level quality. Together they align with TextEditBench's evaluation dimensions (instruction following, text accuracy, visual consistency, layout preservation), enabling direct comparison while covering the axes along which these rubrics are most informative. We additionally include image-layer degradations (noise, blur, JPEG compression) as a reference baseline: these are not edit errors in the benchmarking sense but are common real-world image quality issues that VLM judges may or may not respond to, providing an anchor for interpreting sensitivity profiles.
+
+The edit types and degradation dimensions cover the major stylistic properties a user might request to change and the corresponding errors that can appear in the output: position, scale, colour, rotation, font weight and style, letter spacing, opacity, alignment, along with image-level artefacts that can degrade output quality (JPEG compression, Gaussian noise). Text content editing is deliberately excluded; it is a well-studied dimension that would require a separate stimulus design and evaluation approach to stress-test thoroughly. The pairing of edit types with degradation dimensions was randomised, constrained only by what each layout could physically support, for instance, a rotation applied to text near a canvas edge can push the element outside the image bounds, so such combinations are filtered out by the layout system (Section~\ref{Layouts and Difficulty Tiers}).
+
+\subsection{Why Magnitude-Graded Stimuli}
+
+Binary correct/incorrect pairs would answer the question ``can the VLM distinguish a correct edit from an incorrect one?'' but not ``how incorrect does an edit have to be before the VLM notices?'' The latter question is more informative for benchmark designers, who need to know not just whether VLM judges are reliable in principle but at what error magnitudes they can be trusted.
+
+Magnitude-graded stimuli allow us to estimate sensitivity curves analogous to psychometric functions in sensory psychology: as the degradation magnitude increases, the VLM's score should decrease (or its probability of flagging an error should increase). The slope and threshold of this curve characterise the judge's sensitivity. A steep curve with a low threshold indicates a sensitive judge; a flat curve indicates a blind spot.
+
+The magnitude tiers used in this study span a range chosen to straddle the perceptual discrimination threshold. The smallest tier for each dimension (labelled ``micro'' or ``tiny'') corresponds to a magnitude that is unlikely to be distinguishable even when two images are viewed side by side. The intermediate tiers correspond to errors that become noticeable when the images are placed in direct comparison. The largest tiers (``large'', ``xlarge'') correspond to errors that are plainly visible even when the images are viewed independently. This informal perceptual calibration informs the interpretation of sensitivity curves: a VLM whose detection rate only rises for the largest magnitudes is performing worse than human-level discrimination on the intermediate range.
+
+\subsection{Two-Experiment Design}
+
+The study separates two distinct tasks.
+
+\textbf{Experiment 1 (perceptual sensitivity)} presents the VLM with the ground-truth image and the degraded image and asks only whether the two images differ. This isolates the VLM's raw visual discrimination capacity: can it see the error, given that it knows exactly what the correct result looks like?
+
+\textbf{Experiment 2 (edit judgment)} presents the VLM with the source image, the edit instruction, and the degraded result, the same setup used in real benchmarks. This is the task benchmarks need VLMs to perform: reason about the instruction, infer the intended result, and compare it against the actual output.
+
+The gap between Experiment 1 and Experiment 2 scores on the same stimulus is itself a key diagnostic. A large gap indicates that the VLM can see the error when it is shown the ground truth explicitly, but fails to catch it when reasoning from the instruction, a reasoning overhead cost. A small gap indicates that perception, not reasoning, is the bottleneck. Both failure modes are practically important but require different remedies.
+
+\subsection{Situating Against Prior Work}
+
+TextEditBench and related benchmarks treat VLM judges as a fixed tool whose reliability is assumed. The Tencent/WeChat evaluation framework similarly adopts VLM scoring without validating the judge against known ground truth deviations. Our study can be read as a stress-test of that assumption: we take the same evaluation dimensions, the same 1--5 scoring scale, and the same prompt structure, and measure where in the error-magnitude space the judge's scores depart from perfect correlation with the ground truth.
+
+The closest methodological precedent is research on LLM-as-judge calibration in text evaluation, where it has been shown that LLM judges can be sensitive to prompt framing, positional biases, and self-preference effects. Our work extends this line of inquiry to the vision modality and to the specific domain of text-in-image editing, where the error dimensions are perceptual rather than semantic.
 
 
-\section{Evaluation Framework}
+\section{Stimulus Generation} \label{Stimulus Generation}
 
-\label{Evaluation Framework}
+Each stimulus in this study is a triple of images: a \textbf{source} image (the original, unedited document), a \textbf{ground truth} image (the source with the intended edit applied correctly), and a \textbf{degraded} image (the source with the intended edit applied but with a controlled error introduced). Together, these three images record a single editing scenario at a known, parameterised deviation from correctness. The stimulus generation pipeline has five stages: base layout instantiation, HTML-layer degradation, browser rendering, image-layer degradation (for a subset of configs), and metadata serialisation.
 
-Our evaluation is designed around the diagnostic, disaggregated philosophy advocated by Raji et al.\ \cite{raji2021everything} and discussed in Section~\ref{Evaluation}. The key principle is that composite scores obscure architecture-specific failure modes; we therefore evaluate atomic operations individually. The evaluation has two components.
+\subsection{Rendering Pipeline} \label{Rendering Pipeline}
 
-\subsection{Diagnostic Evaluation on Synthetic Test Set}
+All images are rendered from self-contained HTML/CSS documents using Playwright, a headless Chromium-based browser automation library. HTML/CSS is the generation medium because it offers direct programmatic control over all the visual properties we manipulate --- element position, font size, colour, weight, style, letter spacing, and text content --- without the opacity of generative models. A CSS override block injected into the document's \texttt{<head>} is sufficient to apply any of the quantitative degradations described below, and the browser's layout engine handles all rendering geometry consistently.
 
-\label{Diagnostic Evaluation}
-
-A held-out portion of the synthetic dataset serves as a diagnostic test set. Because the ground truth is pixel-perfect, we can measure editing accuracy with high precision. We plan to evaluate along six dimensions, each targeting a distinct aspect of quantitative editing:
-
-\begin{enumerate}
-    \item \textbf{Spatial relocation accuracy}: how close is the edited text to the target position?
-    \item \textbf{Scaling precision}: how close is the rendered size of the text to the target size?
-    \item \textbf{Styling precision}: how close is the rendered font styling of the text to the target text?
-    \item \textbf{Color change fidelity}: how close is the resulting text color to the target color?
-    \item \textbf{Content replacement correctness}: does the text say the right thing after a content swap?
-    \item \textbf{Unintended modification}: has the model altered image regions that should be unchanged?
-\end{enumerate}
-
-\noindent The specific metrics for each dimension (e.g., pixel distance, bounding box IoU for spatial accuracy, RGB distance for color fidelity, character error rate) will be selected during the evaluation development phase. The guiding criterion is that each metric must produce an interpretable, per-sample signal that can be disaggregated by architecture, edit type, and edit magnitude, enabling the comparative analysis required by RQ2.
-
-An important open question is whether these six dimensions are sufficient or whether additional diagnostic axes will emerge during implementation. For example, the TAS metric proposed by STELLAR \cite{seo2025stellar} could be valuable for measuring style preservation of text elements, but its inclusion will depend on implementation feasibility within the project timeline.
-
-\subsection{External Benchmark Evaluation}
-
-\label{TextEditBench Evaluation}
-
-To assess generalizability (RQ1a), we evaluate all model configurations on TextEditBench \cite{gui2025texteditbench}, following its standard protocol. TextEditBench includes both qualitative and quantitative editing tasks, allowing us to observe whether fine-tuning on our quantitative synthetic data transfers to the benchmark's quantitative categories.
-
-\subsection{Architectural Comparison}
-
-\label{Comparative Analysis}
-
-The evaluation is structured to support the architectural comparison central to RQ2. Based on the limitations identified in Section~\ref{Architectural Limitations}, we expect the two architectures to exhibit qualitatively different failure patterns. Specifically:
+The rendering configuration is kept fixed throughout the study:
 
 \begin{itemize}
-    \item The diffusion model may show higher rates of unintended modification near the edit region, consistent with the attention leakage problem documented for text rendering in diffusion models \cite{shi2025wordcon}.
-    \item The VAR model may struggle disproportionately with small spatial displacements or font style changes that are difficult to represent at coarse scales, and may exhibit pixel-level fidelity issues stemming from generator-tokenizer inconsistency \cite{he2025rear}.
+    \item \textbf{Viewport:} 1024 $\times$ 1024 pixels, device scale factor 1.0 (no HiDPI scaling).
+    \item \textbf{Font rendering:} Subpixel rendering and LCD text are disabled (\texttt{--disable-lcd-text}, \texttt{--font-render-hinting=none}) to eliminate platform-dependent anti-aliasing differences that could introduce uncontrolled variation.
+    \item \textbf{Animations:} Disabled globally via CSS (\texttt{animation-duration: 0s}, \texttt{transition-duration: 0s}) so the rendered state is always the fully settled layout.
+    \item \textbf{Network:} All fonts and assets are loaded from within the document or via a fixed URL seed (for the one image-background layout); \texttt{wait\_until="networkidle"} and \texttt{document.fonts.ready} are awaited before screenshot capture to ensure all assets resolve.
+    \item \textbf{Output format:} PNG, then downscaled to 512 $\times$ 512 using Lanczos resampling for storage and API submission.
 \end{itemize}
 
-\noindent These are directional hypotheses to guide analysis, not rigid predictions. The diagnostic evaluation is designed to surface unexpected patterns as well, and we will report all findings regardless of whether they confirm these expectations or not. Statistical methods for comparing error distributions across architectures (e.g., non-parametric tests with appropriate corrections for multiple comparisons) will be specified during the evaluation development phase.
+This approach produces pixel-perfect, deterministic renders: given the same HTML string and the same Chromium version, the output is identical on any machine. There are no generative stochastic components in the image creation process.
+
+\subsection{Layouts and Difficulty Tiers} \label{Layouts and Difficulty Tiers}
+
+Rather than free-form HTML templates, the stimulus set is organised around a fixed registry of \textbf{layouts}, self-contained scene definitions that specify a set of named text roles, their default typographic styles, the HTML structure, and which edit types each layout supports. Layouts are the unit of visual variety in the stimulus set.
+
+Eleven layouts are defined, spanning two difficulty tiers:
+
+\begin{table}[htbp]
+\centering
+\caption{Layout difficulty tiers.}
+\label{tab:layout-tiers}
+\begin{tabular}{lp{5cm}p{6cm}}
+\toprule
+Tier & Description & Layouts \\
+\midrule
+\textbf{Easy} & Large text ($\geq$48 px), high contrast, clean solid or simple gradient background & \texttt{solo\_headline}, \texttt{gradient\_headline}, \texttt{pattern\_headline} \\
+\midrule
+\textbf{Medium} & Moderate text (26--60 px), more complex backgrounds, multi-element scenes, absolutely positioned elements & \texttt{title\_byline}, \texttt{name\_card}, \texttt{quote\_attribution}, \texttt{corner\_badge}, \texttt{banner\_caption}, \texttt{image\_bg\_headline}, \texttt{title\_subtitle}, \texttt{header\_body} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The difficulty tiers are intentional design choices, not emergent categories. Easy-tier layouts are designed so that every degradation should in principle be detectable: the text is large, the background is simple, and there is nothing to confuse the element of interest. Medium-tier layouts introduce multiple text elements and more complex backgrounds, which may interact with VLM sensitivity independently of the degradation magnitude.
+
+Each layout is parameterised by a \texttt{LAYOUT\_SETS} mapping that constrains which layouts are used for each \texttt{(edit\_type, difficulty)} cell in the stimulus design matrix. This prevents applying an edit to a layout that does not support it (e.g., a rotation edit on a layout whose constraints forbid rotation because adjacent elements would be occluded). Layout-level position-offset constraints further restrict which displacement directions are allowed per element to avoid text reflow, a CSS \texttt{transform: translate()} is used for all spatial offsets precisely because it does not trigger document reflow and therefore does not disturb any other layout element.
+
+\subsection{Edit Types} \label{Edit Types}
+
+Stimuli are generated by crossing a set of edit types with a set of degradation configs. The edit types represent the operations that a text-editing model would be asked to perform:
+
+\begin{itemize}
+    \item \textbf{Color change:} Change the text colour of a named element to a target hex value.
+    \item \textbf{Scale change:} Resize the text of a named element by a relative amount (e.g., 20\% larger, 30\% smaller).
+    \item \textbf{Rotation:} Rotate a named element by a target angle in degrees.
+    \item \textbf{Relocation / alignment:} Move a named element to a different position on the canvas (absolute position or alignment grid position).
+    \item \textbf{Font weight:} Change the CSS \texttt{font-weight} property of a named element.
+    \item \textbf{Font style (italic):} Change the CSS \texttt{font-style} property of a named element.
+    \item \textbf{Letter spacing:} Change the CSS \texttt{letter-spacing} property of a named element.
+    \item \textbf{Font family:} Substitute the typeface of a named element.
+\end{itemize}
+
+For each stimulus, the ``correct'' edit is applied first (producing the ground truth image) and then the degradation is applied on top of the correctly edited HTML (producing the degraded image). The source image is rendered from the unmodified base layout. This three-image structure ensures that the degraded image reflects both the intended edit and the error, replicating the situation in which an editing model almost-but-not-quite executes an instruction.
+
+\subsection{Degradation Dimensions and Magnitude Parameterisation} \label{Degradation Dimensions}
+
+The degradation engine applies controlled errors to the HTML/CSS source before rendering. All HTML-layer degradations operate by injecting a CSS override block (\texttt{<style>\#element\_id \{ property: value !important; \}</style>}) immediately before the \texttt{</head>} tag. The \texttt{!important} qualifier ensures the override takes precedence over the layout's base styles. Twelve degradation dimensions are implemented at the HTML layer, plus three at the image layer (applied to the rendered PNG after browser output).
+
+\subsubsection{HTML-Layer Degradations}
+
+\textbf{Color offset.} The element's CSS \texttt{color} property is overridden with a colour that deviates from the correct colour by a specified $\Delta E$ (CIEDE2000) distance. The shift is applied along the CIE $L^*$ (lightness) axis, which approximates a uniform perceptual deviation. The target $\Delta E$ is first applied as a positive lightness shift; if that clips to the gamut boundary ($L^* > 100$ or $< 0$), the shift is reversed. Ten magnitude tiers are defined, spanning $\Delta E \approx 0.5$--50:
+
+\begin{table}[htbp]
+\centering
+\caption{Color offset magnitude tiers.}
+\label{tab:color-tiers}
+\begin{tabular}{lll}
+\toprule
+Magnitude label & $\Delta E$ range (CIEDE2000) & Perceptual interpretation \\
+\midrule
+micro      & 0.5 -- 1.5  & Sub-threshold; not perceptible side-by-side \\
+tiny       & 1.5 -- 2.5  & Near-threshold; barely perceptible \\
+subtle     & 2.5 -- 4.0  & Subtle; perceptible on close comparison \\
+small      & 4.0 -- 6.5  & Just-noticeable difference (JND range) \\
+moderate   & 6.5 -- 9.0  & Clearly visible on comparison \\
+medium     & 9.0 -- 13.0 & Clearly wrong colour \\
+strong     & 13.0 -- 18.0 & Strong deviation \\
+large      & 18.0 -- 26.0 & Large deviation \\
+very\_large & 26.0 -- 36.0 & Very large deviation \\
+xlarge     & 36.0 -- 50.0 & Obviously wrong colour \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Position offset.} The element's visual position is shifted using a CSS \texttt{transform: translate(Xpx, Ypx)} override. Twelve configs cover four directions (right, left, down, up) at three magnitude tiers (small: 3--10 px; medium: 11--50 px; large: 51--150 px). Using \texttt{transform: translate} rather than \texttt{position} or \texttt{margin} modifications ensures the offset is always relative to the element's rendered position, regardless of the layout's flexbox or absolute positioning, and does not trigger reflow.
+
+\textbf{Scale error.} The element's \texttt{font-size} is overridden at $\pm$3\% to $\pm$90\% of the correct value. Ten configs cover upward and downward errors at five tiers each (small: 2--5\%; medium: 6--14\%; large: 15--35\%; xlarge: 36--65\%; xxlarge: 66--90\%). The base font size is extracted from the HTML by regex parsing of the element's existing style block, so the error percentage is applied relative to the actual correct size, not a fixed baseline.
+
+\textbf{Rotation.} The element is rotated by applying \texttt{transform: rotate(Ndeg)}. Ten configs cover clockwise and counter-clockwise rotations at five tiers (tiny: $\approx$1$^\circ$; small: $\approx$3$^\circ$; medium: $\approx$5$^\circ$; large: $\approx$15$^\circ$; xlarge: $\approx$22$^\circ$).
+
+\textbf{Font weight.} The \texttt{font-weight} property is overridden to one of nine CSS numeric values (100--900 in steps of 100). No jitter is applied to categorical properties; the magnitude is the exact weight value.
+
+\textbf{Font style.} The \texttt{font-style} property is set to \texttt{italic} or \texttt{oblique}. Two configs.
+
+\textbf{Letter spacing.} The \texttt{letter-spacing} property is overridden in the range $-3$ to $+15$ px. Five configs cover positive expansion (small: 1--3 px; medium: 3--8 px; large: 8--15 px) and negative compression (small: $-1.5$ to $-0.5$ px; medium: $-3$ to $-1.5$ px).
+
+\textbf{Opacity.} The \texttt{opacity} property is reduced from 1.0 to approximately 0.30. Zero opacity (invisible text) is excluded; the minimum is $\approx$0.30 ($\approx$70\% transparent).
+
+\textbf{Font family.} Seven alternative typefaces replace the layout's base font: three sans-serif (Arial, Verdana, Trebuchet MS), two serif (Georgia, Palatino), one monospace (Courier New), and one condensed display (Impact). All are system fonts available in Chromium's rendering environment.
+
+\subsubsection{Image-Layer Degradations}
+
+Three degradation types are applied as pixel-level post-processing to the rendered PNG, using Pillow (PIL):
+
+\begin{itemize}
+    \item \textbf{Gaussian noise:} Additive noise with standard deviation $\sigma \in \{3\text{--}8, 9\text{--}22, 23\text{--}40\}$ (small, medium, large).
+    \item \textbf{JPEG compression:} The PNG is re-saved as JPEG at quality $\in \{72\text{--}90, 40\text{--}65, 10\text{--}35\}$ and then reloaded, introducing block artefacts (light, medium, heavy).
+    \item \textbf{Gaussian blur:} A Gaussian filter with radius $\in \{0.5\text{--}2.0, 2.1\text{--}4.0, 4.1\text{--}7.0\}$ (small, medium, large).
+\end{itemize}
+
+These three dimensions serve as a reference baseline: they are not plausible errors for a text-editing model operating on HTML (which produces clean rasterised output), but they represent image quality degradations that VLMs encounter in natural images and that human annotators would easily detect at moderate magnitudes.
+
+\subsection{Continuous Jitter Sampling} \label{Continuous Jitter Sampling}
+
+To avoid over-fitting the sensitivity curve to a fixed set of exact magnitude values, each numeric degradation config specifies a \textbf{jitter range} (\texttt{min\_X} / \texttt{max\_X}) rather than a point value. At generation time, the actual parameter value is sampled uniformly from the range and stored in the stimulus metadata. This means that stimuli within the same magnitude tier differ in their exact values, and the sensitivity curve is fit over these continuous observations rather than over binned means. The magnitude tier label (e.g., ``small'', ``medium'') is preserved in the metadata as a grouping key for display; the resolved numeric value is used in all statistical analyses.
+
+The tier boundaries were chosen so that:
+\begin{itemize}
+    \item The smallest tier (e.g., $\Delta E$ 0.5--1.5 for color) falls below the expected human just-noticeable difference, providing a floor for the sensitivity curve.
+    \item The top tier (e.g., $\Delta E$ 36--50) produces errors that are unambiguously visible even without a reference image.
+    \item Consecutive tier ranges are non-overlapping, so the ordering of stimuli along the magnitude axis is unambiguous.
+\end{itemize}
+
+The tier labels ``micro'', ``tiny'', ``subtle'', and ``small'' correspond to a rough perceptual interpretation: micro is sub-threshold even on direct side-by-side comparison; small corresponds to the just-noticeable-difference range; tiers above small (moderate through xlarge) are progressively more visible, with xlarge corresponding to errors apparent even when only the degraded image is viewed in isolation.
+
+\subsection{Seed Management}
+
+The stimulus generation script uses a per-instance seeded random number generator, constructed from the stimulus ID using Python's \texttt{random.Random(stimulus\_id)}. This ensures that jitter values are deterministic given the stimulus ID, so the stimulus set is fully reproducible: re-running generation with the same configs and templates produces identical parameter values. The seed is derived from the stimulus ID rather than a global seed to avoid subprocess RNG inheritance issues when generation is parallelised.
+
+\subsection{Sample Size and Stimulus Coverage} \label{Sample Size}
+
+The generation process produced 703 stimuli recorded in \texttt{data/generated/manifest.jsonl}. This represents a practical sample from the full factorial of (edit types) $\times$ (degradation configs) $\times$ (layouts), which would be too large to evaluate against multiple VLMs within the study's API budget constraints.
+
+The stimulus set is not balanced: not every (dimension, edit\_type, layout) cell is equally populated. The design prioritises depth over breadth within dimensions: each degradation dimension is covered across multiple magnitude tiers and at least two or three layout variants (to distinguish magnitude effects from layout-specific confounds), but not all combinations of edit type and degradation are represented.
+
+For the VLM evaluation, two analysis approaches are available depending on the research question:
+
+\begin{enumerate}
+    \item \textbf{Model-specific corpora:} Use all stimuli for which a given model returned a valid (parseable) response. The per-model corpus may differ in size and composition if some stimuli exceeded token limits or encountered API failures for a subset of models. This approach maximises statistical power for each model separately, at the cost of strict comparability across models.
+    \item \textbf{Common corpus:} Restrict analysis to the subset of stimuli for which all evaluated models returned valid responses. This approach enables direct cross-model comparison on identical stimuli, at the cost of reduced corpus size.
+\end{enumerate}
+
+The choice between approaches is discussed in Section~\ref{Analysis Methods} in the context of specific analyses.
+
+At the current sample size ($\approx$700 stimuli across $\approx$10 magnitude tiers per dimension and $\approx$8 dimensions), per-cell counts range from approximately 5 to 30 stimuli depending on the dimension and difficulty tier. This is sufficient to estimate mean scores and detect strong monotone trends in the sensitivity curve, but may be underpowered for detecting subtle slope differences between models or edit types within a single dimension.
 
 
+\section{Evaluation Protocol} \label{Evaluation Protocol}
+
+\subsection{Models Under Evaluation} \label{Models Under Evaluation}
+
+The following proprietary VLMs were evaluated as judges in this study. All models were accessed via their respective cloud APIs. Inference was deterministic where supported: temperature was set to 0.0 for all models to minimise response variance unrelated to the stimulus.
+
+\begin{table}[htbp]
+\centering
+\caption{Models evaluated as VLM judges.}
+\label{tab:models}
+\begin{tabular}{llcc}
+\toprule
+Model & API & Temperature & Max tokens \\
+\midrule
+GPT-4o & OpenAI Chat Completions API & 0.0 & 1024 \\
+Gemini 3.1 Pro Preview & Google Generative AI Batch API & 0.0 & 1024 \\
+Qwen2.5-VL & Local & 0.0 & 1024 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Image encoding.} For the OpenAI API, images are encoded as base64 data URIs with \texttt{detail: "high"}, which instructs the model to use the full tile-based resolution processing (up to 2048 px longest side, 512 px tiles). For the Gemini API, images are passed as inline base64-encoded data in the batch JSONL format.
+
+\textbf{Cost and access-tier constraints.} Gemini models were accessed via the Batch API at 50\% of the standard per-token cost. This was a practical necessity: Tier 1 API accounts are subject to a daily request cap (250 requests per day for some Gemini Pro variants), which would have made synchronous evaluation of the full stimulus set across two experiments prohibitively slow. The Batch API bypasses this limit at the cost of asynchronous execution (jobs typically completing within 24 hours). GPT-4o was accessed via a Tier 1 OpenAI account with standard rate limits; the synchronous runner handles rate limiting through sequential submission with implicit per-request delays.
+
+\subsection{Evaluation Prompt Design} \label{Evaluation Prompt Design}
+
+The prompt structure is aligned with the evaluation protocols used in TextEditBench \cite{gui2025texteditbench} to ensure that our calibration findings are directly interpretable in terms of those benchmarks' judge setup.
+
+All prompts are stored in \texttt{configs/vlm\_prompts.yaml} and loaded at runtime. The response format is structured JSON throughout: both the system message and the user template instruct the model to return \textbf{only} a valid JSON object with no prose, no markdown fences, and no explanation. This design was chosen over free-text responses to enable robust automatic parsing and to avoid variability in score extraction.
+
+\subsubsection{Experiment 1: Perceptual Sensitivity Prompt}
+
+\textbf{Images submitted:} (1) the ground truth image, (2) the degraded image.
+\textbf{No edit instruction is provided.} The model is asked only to compare the two images visually.
+
+\textbf{System message:}
+\begin{quote}
+You are an expert visual editor and typographic evaluator. Your task is to compare two document images and determine whether they differ visually. Respond ONLY with valid JSON --- no prose, no markdown fences, no explanation.
+\end{quote}
+
+\textbf{User template:}
+\begin{quote}
+I will show you two images in order:
+\begin{enumerate}
+\item A REFERENCE image (the correct, intended result)
+\item A COMPARISON image (a version that may or may not contain subtle errors)
+\end{enumerate}
+Determine whether there is any, even slight, difference between the two images.
+
+Return ONLY this exact JSON object:
+\verb|{"detected_difference": <true or false>, "similarity_score": <integer 1-5, where 1=very different and 5=identical>, "description": "<brief description of differences, or empty string if none>"}|
+\end{quote}
+
+This prompt elicits three outputs per stimulus: a binary detection flag (\texttt{detected\_difference}), a graded similarity score (\texttt{similarity\_score}, 1--5), and a free-text description of any observed differences.
+
+\subsubsection{Experiment 2: Edit Judgment Prompt}
+
+\textbf{Images submitted:} (1) the source (original, unedited) image, (2) the degraded image.
+\textbf{The edit instruction is interpolated into the user template.} The model is asked to evaluate the edit result against the instruction, without being shown the ground truth.
+
+\textbf{System message:}
+\begin{quote}
+You are an expert visual editor and typographic evaluator. Your task is to evaluate the quality of a text editing operation applied to a document image. You will be shown an original source image, an edit instruction, and a result image. Evaluate the result strictly based on how accurately the edit was performed. Respond ONLY with valid JSON --- no prose, no markdown fences, no explanation.
+\end{quote}
+
+\textbf{User template:}
+\begin{quote}
+Edit instruction: \{instruction\}
+
+I will show you two images in order:
+\begin{enumerate}
+\item The ORIGINAL image (before any edit)
+\item The RESULT image (the edit was applied --- may be correct, slightly off, or clearly wrong)
+\end{enumerate}
+Rate the result on each dimension using a 1--5 integer scale: [five rubric dimensions listed with scoring anchors]
+
+Return ONLY this exact JSON object:
+\verb|{"instruction_following": <1-5>, "text_accuracy": <1-5>, "visual_consistency": <1-5>, "layout_preservation": <1-5>, "overall_quality": <1-5>, "errors_noticed": "<brief description>"}|
+\end{quote}
+
+The five scoring dimensions are drawn from TextEditBench's semantic evaluation rubric:
+
+\begin{table}[htbp]
+\centering
+\caption{Experiment 2 scoring rubric dimensions.}
+\label{tab:rubric}
+\begin{tabular}{p{3.5cm}p{5.5cm}p{4cm}}
+\toprule
+Dimension & What it measures & Score anchors \\
+\midrule
+\texttt{instruction\_following} & Did the edit match what was requested, with no unintended changes? & 1 = wrong operation or not executed; 5 = exactly performed \\
+\texttt{text\_accuracy} & Is the text content correct in wording, spelling, and case? & 1 = wrong or missing; 5 = exact and correct \\
+\texttt{visual\_consistency} & Were all visual properties not part of the requested change preserved? & 1 = widespread collateral damage; 5 = only requested property changed \\
+\texttt{layout\_preservation} & Did non-target areas of the image remain unchanged? & 1 = large portions changed; 5 = non-target areas fully preserved \\
+\texttt{overall\_quality} & Holistic quality of the editing result & 1 = unusable; 5 = excellent \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \texttt{errors\_noticed} field is not scored; it is used as qualitative data and for post-hoc validation that the model's scores reflect the degradation that was introduced.
+
+\subsubsection{Separated Rubric Variant (Reference)}
+
+A separated variant of the Experiment 2 prompt (\texttt{experiment\_2\_separated}) was implemented for comparison with TextEditBench's evaluation approach. In this variant, each rubric dimension is queried in a separate API call with a distinct system prompt focused exclusively on that dimension, returning \verb|{"score": <1-5>, "rationale": "<explanation>"}|. This produces five API calls per stimulus instead of one. The separated variant was implemented to enable comparison with benchmarks that use dimension-by-dimension querying, but the primary analysis in this study uses the combined prompt to match the more common single-call protocol.
+
+\subsection{Response Parsing} \label{Response Parsing}
+
+VLM responses are parsed into structured data by a three-strategy parser:
+
+\begin{enumerate}
+    \item \textbf{Direct parse:} Attempt \texttt{json.loads()} on the stripped response string. This succeeds for well-behaved responses.
+    \item \textbf{Fence extraction:} If direct parsing fails, locate a \texttt{```json ... ```} or \texttt{``` ... ```} code block using a regex and attempt to parse its contents. This recovers responses where the model wrapped its JSON in markdown formatting despite the instruction not to.
+    \item \textbf{Brace extraction:} If fence extraction also fails, locate the first \texttt{\{...\}} block in the response using a regex and attempt to parse it. This recovers responses with leading or trailing prose.
+\end{enumerate}
+
+If all three strategies fail, the response is recorded as a parse failure and logged to \texttt{data/parse\_failures.jsonl}. Parse failures are excluded from all analyses. Numeric scores extracted from the JSON are validated: only integer values in [1, 5] are accepted; values outside this range are treated as missing for that dimension.
+
+\subsection{Experimental Conditions} \label{Experimental Conditions}
+
+Each stimulus is evaluated in both experiments (Exp1 and Exp2) for each model. The evaluation runner appends results to a JSONL file immediately after each API call (crash-safe streaming output), allowing interrupted runs to resume without duplicating already-completed calls. Completed stimulus IDs are tracked and excluded from subsequent runs via the \texttt{--filter-ids} mechanism, which reads a completed results file and restricts the new run to stimuli not yet present.
+
+\subsection{Noop and Perfect Control Conditions} \label{Noop and Perfect Control Conditions}
+
+Two control conditions test for false positives, cases where the VLM reports errors that are not present.
+
+The \textbf{noop condition} uses an identical image pair: the degraded image is byte-identical to the ground truth (no error introduced). It applies to both experiments.
+
+\begin{itemize}
+    \item In \textbf{Experiment 1}, the VLM is shown two identical images and should report \texttt{detected\_difference: false} and \texttt{similarity\_score: 5}. Any reported difference is a false positive.
+    \item In \textbf{Experiment 2}, the VLM is shown the source image alongside an unchanged copy as the ``edited'' result. The expected score is 0 as no edit was applied. High scores indicate the VLM failed to detect that no edit was performed.
+\end{itemize}
+
+The \textbf{perfect condition} applies only to Experiment 2: the VLM is shown the source image and a correctly executed edit (ground truth). High scores across all dimensions are expected; low scores indicate the VLM is penalising correctly executed edits.
+
+Control results are stored separately from degraded results and analysed independently (Section~\ref{Control Stimulus Analysis}).
+
+
+\section{Analysis Methods} \label{Analysis Methods}
+
+\subsection{Data Preparation} \label{Data Preparation}
+
+Raw results are stored as JSONL files. Each line records one VLM response to one stimulus under one experiment variant. A corresponding manifest records the ground-truth metadata for each stimulus: edit type, degradation dimension, magnitude tier label, jitter-resolved numeric parameter values, layout properties, and image paths.
+
+Results are joined with manifest metadata on \texttt{stimulus\_id} at load time, producing a long-format table with one row per (stimulus, model, experiment) triplet and columns for all score dimensions, the degradation parameters, and the layout properties. All downstream analyses operate on this single table; cross-model results are produced by grouped operations on \texttt{(model, dimension, tier)} rather than by separate per-model passes.
+
+Control stimuli (Section~\ref{Control Stimulus Analysis}) are separated from degraded stimuli at load time and analysed separately. Sensitivity and threshold analyses run on degraded stimuli only.
+
+Parse failures are excluded from all analyses. Parse success rate is reported per model and per experiment as a data quality indicator.
+
+Each stimulus is assigned a continuous numeric magnitude derived from its degradation parameters. The conversion is dimension-specific:
+
+\begin{table}[htbp]
+\centering
+\caption{Numeric magnitude assignment by degradation dimension.}
+\label{tab:magnitude-conversion}
+\begin{tabular}{ll}
+\toprule
+Dimension & Numeric magnitude \\
+\midrule
+\texttt{color\_offset}      & $\Delta E$ (CIEDE2000) \\
+\texttt{position\_offset}   & Euclidean distance in pixels: $\sqrt{x^2 + y^2}$ \\
+\texttt{scale\_error}       & $|\text{scale\_error\_pct}|$ (absolute percentage deviation) \\
+\texttt{rotation}           & $|\text{angle\_deg}|$ (absolute rotation in degrees) \\
+\texttt{font\_weight\_light}  & $400 - \text{weight}$ (lighter direction; e.g.\ 400 $\to$ 300 $\to$ 200 $\to$ 100) \\
+\texttt{font\_weight\_heavy}  & $\text{weight} - 400$ (heavier direction; e.g.\ 400 $\to$ 500 $\to$ 600 $\to$ 700 $\to$ \ldots) \\
+\texttt{font\_style}        & Categorical severity: italic/normal $= 1.0$, oblique $= 0.5$ \\
+\texttt{font\_family}       & Category distance: same-class fonts $= 0.5$, cross-class $= 1.0$ \\
+\texttt{letter\_spacing}    & $|\text{letter\_spacing\_px}|$ \\
+\texttt{opacity}            & $1.0 - \text{opacity}$ (opacity reduction) \\
+\texttt{gaussian\_noise}    & Noise $\sigma$ \\
+\texttt{jpeg\_compression}  & $100 - \text{quality}$ \\
+\texttt{blur}               & Blur radius \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For stimuli with jitter-resolved parameters (drawn from a \texttt{min\_X}/\texttt{max\_X} range), the resolved scalar from the metadata is used directly rather than the range midpoint.
+
+\subsection{Detection and Sensitivity Metrics} \label{Detection and Sensitivity Metrics}
+
+The \textbf{detection rate} for dimension $d$ and model $m$ is the proportion of degraded stimuli (magnitude $> 0$) for which the model reported \texttt{detected\_difference: true} in Experiment 1:
+
+\[\text{DetectionRate}(d, m) = \frac{1}{N_{d,m}} \sum_{i \in S_{d,m}} \mathbb{1}[\text{detected\_difference}_{i} = \text{true}]\]
+
+A dimension is classified as a \textbf{blind spot} for a given model when its detection rate is not significantly higher than the model's adjusted false positive rate $\text{FPR}_m$ (Section~\ref{Control Stimulus Analysis}). This baseline-relative criterion ties the blind-spot designation to each model's own response tendencies rather than to a fixed cutoff. The adjusted FPR excludes the \texttt{alignment\_error} dimension, which produces anomalously high raw FPR due to spatial hallucination rather than a general detection bias; the resulting per-model baselines are near-zero ($\leq 3.2\%$), making the criterion practically very close to testing against chance while remaining methodologically consistent.
+
+Because $\text{FPR}_m$ is estimated from a control set of comparable size ($n_{\text{ctrl}} \approx 31$ after excluding \texttt{alignment\_error}), it is treated as a random quantity rather than a known constant. Significance is assessed with a one-sided binomial test ($H_0\colon p \leq \text{FPR}_m$) and 95\% confidence intervals on the sensitivity margin $\Delta(d, m) = \text{DetectionRate}(d, m) - \text{FPR}_m$ are computed using Newcombe's hybrid score interval for the difference of two independent proportions. Benjamini--Hochberg correction is applied at $\alpha = 0.05$ across all (dimension, model) pairs.
+
+To convey both effect size and statistical significance in a single view, results are presented as a \textbf{forest plot}. Each row corresponds to a degradation dimension; within a row, one point per model marks $\Delta(d, m)$, with horizontal error bars giving the 95\% Newcombe CI. A reference line at $\Delta = 0$ marks the blind-spot boundary: points whose CI excludes zero (after BH correction) are sensitive on that dimension, points whose CI overlaps zero are blind. Dimensions are ordered by mean $\Delta$ across models.
+
+The \textbf{score gap} between experiments for dimension $d$ and model $m$ is the mean difference between Experiment 2 \texttt{overall\_quality} and Experiment 1 \texttt{similarity\_score} on the same stimuli:
+
+\[\text{Gap}(d, m) = \overline{\text{oq}_{E2}}_{d,m} - \overline{\text{similarity}_{E1}}_{d,m}\]
+
+A positive gap indicates that Experiment 2 scores are inflated relative to perceptual similarity; a negative gap indicates the opposite. The pattern of gaps across dimensions tests whether the cost of instruction-level reasoning is dimension-general or dimension-specific.
+
+\subsection{Magnitude Tier Analysis} \label{Magnitude Tier Analysis}
+
+Each degradation dimension is sampled at multiple magnitude tiers (micro, tiny, small, medium, large, etc.), defined dimension-relatively so that ``small'' in \texttt{color\_offset} corresponds to a different $\Delta E$ than ``small'' in \texttt{letter\_spacing} does in pixels. Tier-level analysis allows direct cross-dimension comparison of the magnitude regime at which the response transitions from insensitive to sensitive.
+
+For each (dimension, model) cell, mean detection rate (Experiment 1) and mean \texttt{overall\_quality} (Experiment 2) are plotted against magnitude tier as psychometric curves, with one line per model on the same axes. Bootstrap 95\% confidence intervals are shown as shaded bands.
+
+The \textbf{threshold tier} for a (dimension, model) cell is the smallest magnitude tier at which detection rate reaches 0.5 (and separately 0.75). For dimensions where no tier reaches the threshold, the entry is ``not crossed.'' This is a discrete analogue of a just-noticeable-difference estimate; it does not require interpolation and is stable under small per-tier sample sizes.
+
+The threshold is reported in two forms: the tier label (e.g.\ ``small'') and the corresponding mean numeric magnitude in dimension-native physical units (e.g.\ $\Delta E$ for \texttt{color\_offset}, pixels for \texttt{position\_offset}, degrees for \texttt{rotation}). The physical value is pulled directly from the manifest's jitter-resolved parameters and enables cross-study comparison: a reader can compare, for instance, the $\Delta E$ at which a model's detection crosses 0.5 against perceptual-difference thresholds reported in prior work, without having to map through tier labels.
+
+\subsection{Statistical Tests} \label{Statistical Tests}
+
+The primary statistical test for sensitivity is the \textbf{Spearman rank correlation} between numeric magnitude and the model's score (\texttt{similarity\_score} for Experiment 1, \texttt{overall\_quality} for Experiment 2):
+
+\[\rho_s(\text{magnitude}, \text{score})\]
+
+Spearman is used because scores are ordinal on a 1--5 scale and the magnitude distribution within a dimension is not guaranteed to be normal. A significant negative correlation (after FDR correction) indicates the model is sensitive to that dimension; a non-significant or near-zero correlation indicates a blind spot.
+
+Correlations are computed for approximately 12 dimensions $\times$ 2--3 models $\times$ 2 experiments $\approx$ 60 primary tests. P-values are corrected using the Benjamini--Hochberg procedure at a false discovery rate of 5\%. Both raw and corrected p-values are reported, with corrected values used for all significance claims.
+
+A Spearman correlation matrix among the five Experiment 2 score columns (\texttt{instruction\_following}, \texttt{text\_accuracy}, \texttt{visual\_consistency}, \texttt{layout\_preservation}, \texttt{overall\_quality}) is reported per model to characterise rubric internal structure. Strong intercorrelations indicate the model is collapsing the rubric into a single holistic judgment despite per-dimension instructions; weak intercorrelations indicate the dimensions are scored with some independence.
+
+\subsection{Control Stimulus Analysis} \label{Control Stimulus Analysis}
+
+We use three control conditions to characterise model behaviour independent of the degradation manipulation. Each targets a distinct property of the judge: its baseline tendency to hallucinate differences, its sensitivity floor, and whether the rubric prompt actually probes instruction adherence. Each control set contains 34 stimuli, comparable in size to the typical per-dimension stimulus count of approximately 58 in the main experiments.
+
+\textbf{Identity control (Experiment 1).} The model is shown an identical image pair: the correctly edited image presented as both reference and comparison. Any \texttt{detected\_difference: true} response on these stimuli is a hallucination, and the \textbf{false positive rate} is estimated as
+
+\[\text{FPR}(m) = \frac{1}{N_{\text{ctrl},m}} \sum_{i \in S_{\text{ctrl},m}} \mathbb{1}[\text{detected\_difference}_{i} = \text{true}]\]
+
+Ideally near zero; elevated values indicate the model reports spurious differences in identical pairs. Results (Section~\ref{sec:exp1-controls}) show that the raw FPR is dominated by a single anomalous dimension (\texttt{alignment\_error}), where models hallucinate a difference because the relocated text looks spatially unusual relative to their internal priors rather than genuinely comparing the two images. Excluding this dimension, the adjusted FPR is $\leq 3.2\%$ for all three models. This adjusted rate is used as the per-model null baseline in the blind-spot classification (Section~\ref{Detection and Sensitivity Metrics}).
+
+\textbf{Source-target control (Experiment 1).} The model is shown the original unedited image as the reference and the correctly edited image as the comparison, a fully-applied edit with no degradation. The \textbf{detection rate} on these stimuli measures the model's sensitivity floor: whether it can detect a clean, ground-truth edit at all. Low detection here would indicate that null per-dimension detection rates cannot be unambiguously attributed to degradation invisibility, since the model is failing to register edits even when correctly applied. This control bounds the interpretation of the main experiment from below in the same way the identity control bounds it from above.
+
+\textbf{Instruction-not-followed control (Experiment 2).} The model is shown the original unedited image as the ``edited'' result, along with the edit instruction. Since no edit was applied, the expected score across all rubric dimensions is 1. We report the \textbf{above-1 rate} (proportion receiving any score $> 1$) and the \textbf{high-rating rate} (proportion receiving any score $\geq 3$) as a prompt-validity check on whether the rubric meaningfully measures instruction adherence.
+
+Control metrics are reported per model alongside parse success rates and the score gap (Section~\ref{Detection and Sensitivity Metrics}) in a single failure-mode table.
+
+\subsection{Response Distribution Analysis} \label{Response Distribution Analysis}
+
+For each (dimension, model, experiment) cell, the histogram of scores given by the model is reported as a multi-panel figure. The distributions distinguish failure modes that mean-score and correlation summaries cannot: bimodal collapse to extremes, uniform mid-range scoring, and ceiling effects.
+
+\subsection{Model Agreement on Blind Spots} \label{Model Agreement on Blind Spots}
+
+Each (dimension, model) cell is classified as blind or sensitive using the criterion in Section~\ref{Detection and Sensitivity Metrics}. The resulting blind/sensitive table indexed by dimension $\times$ model distinguishes dimensions where all models are blind (likely reflecting limitations common to current VLMs) from dimensions where models diverge (architecture-specific differences in perceptual or reasoning capabilities).
+
+To summarise the degree of inter-model agreement with a single number, Fleiss' kappa is computed on the complete dimension $\times$ model binary classification table, treating each degradation dimension as a subject and each model as a rater. Rows where any model's classification is ``unknown'' (insufficient data) are excluded before computing kappa. A kappa near 1 indicates that models agree consistently on which dimensions are blind spots; a kappa near 0 indicates near-chance agreement; a negative kappa indicates systematic disagreement. This directly answers RQ1a's question of whether different VLMs have systematically different blind spots --- high kappa means they share the same ones.
